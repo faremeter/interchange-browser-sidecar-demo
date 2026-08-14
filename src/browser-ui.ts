@@ -1,0 +1,328 @@
+import { type } from "arktype";
+
+declare const __BROWSER_WORKFLOW_BUNDLE_URL__: string;
+declare const document: DemoDocument;
+
+type DemoEvent = { preventDefault(): void };
+
+interface DemoElement {
+  append(...nodes: DemoElement[]): void;
+  className: string;
+  dataset: Record<string, string | undefined>;
+  prepend(...nodes: DemoElement[]): void;
+  textContent: string | null;
+}
+
+interface DemoFormElement extends DemoElement {
+  addEventListener(type: "submit", listener: (event: DemoEvent) => void): void;
+}
+
+interface DemoTextAreaElement extends DemoElement {
+  value: string;
+}
+
+interface DemoButtonElement extends DemoElement {
+  disabled: boolean;
+}
+
+interface DemoDocument {
+  createElement(tag: "li" | "span"): DemoElement;
+  getElementById(id: string): unknown;
+}
+
+const BootstrapResponse = type({ deploymentId: "string", tenantId: "string" });
+const BrowserConfigResponse = type({
+  hubWebSocketURL: "string",
+  sidecarId: "string",
+  sidecarToken: "string",
+});
+const TriggerResponse = type({ messageId: "string" });
+
+type BrowserHubLinkStatus =
+  | { kind: "connecting" }
+  | { kind: "connected" }
+  | { kind: "deployed"; agentAddress: string }
+  | { kind: "running"; agentAddress: string; messageId: string }
+  | {
+      kind: "completed";
+      agentAddress: string;
+      messageId: string;
+      result: unknown;
+    }
+  | { kind: "error"; message: string };
+
+type BrowserWorkflowModule = {
+  connect(options: {
+    databaseName: string;
+    hubWebSocketURL: string;
+    sidecarId: string;
+    sidecarToken: string;
+  }): Promise<void>;
+  subscribeStatus(listener: (status: BrowserHubLinkStatus) => void): () => void;
+};
+
+const connection = requiredHTMLElement("connection");
+const deployment = requiredHTMLElement("deployment");
+const execution = requiredHTMLElement("execution");
+const form = requiredForm("prompt-form");
+const prompt = requiredTextArea("prompt");
+const result = requiredHTMLElement("result");
+const submit = requiredButton("submit");
+const timeline = requiredHTMLElement("timeline");
+const userAgent = requiredHTMLElement("user-agent");
+
+let activeMessageId: string | undefined;
+let bootstrapStarted = false;
+
+userAgent.textContent = navigator.userAgent;
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void trigger(prompt.value);
+});
+
+try {
+  await start();
+} catch (cause) {
+  showError(cause instanceof Error ? cause.message : String(cause));
+}
+
+async function start(): Promise<void> {
+  appendTimeline("page", "Browser bundle loaded");
+  const workflowBundleURL = getWorkflowBundleURL();
+  const candidate: unknown = await import(workflowBundleURL);
+  if (!isBrowserWorkflowModule(candidate)) {
+    throw new Error("Browser workflow bundle has an invalid public API");
+  }
+  const response = await fetch("/api/config");
+  const body: unknown = await response.json();
+  if (!response.ok) throw responseError(body, response.status);
+  const config = BrowserConfigResponse.assert(body);
+  candidate.subscribeStatus(handleStatus);
+  await candidate.connect({
+    databaseName: "interchange-browser-sidecar-demo",
+    ...config,
+  });
+}
+
+function handleStatus(status: BrowserHubLinkStatus): void {
+  switch (status.kind) {
+    case "connecting":
+      setState(connection, "Connecting", "pending");
+      appendTimeline("websocket", "Connecting to the ordinary Hub");
+      break;
+    case "connected":
+      setState(connection, "Connected", "success");
+      appendTimeline("websocket", "Browser registered as a sidecar");
+      if (!bootstrapStarted) {
+        bootstrapStarted = true;
+        void bootstrap();
+      }
+      break;
+    case "deployed":
+      setState(deployment, "Deployed", "success");
+      setState(execution, "Ready", "success");
+      submit.disabled = false;
+      appendTimeline(
+        "deployment",
+        `Workflow activated as ${status.agentAddress}`,
+      );
+      break;
+    case "running":
+      activeMessageId = status.messageId;
+      setState(execution, "Running in this tab", "pending");
+      submit.disabled = true;
+      result.textContent = "The browser agent is calling its tool and model…";
+      appendTimeline(
+        "execution",
+        "Trigger received; browser agent loop started",
+      );
+      break;
+    case "completed":
+      if (
+        activeMessageId !== undefined &&
+        status.messageId !== activeMessageId
+      ) {
+        return;
+      }
+      setState(execution, "Completed", "success");
+      submit.disabled = false;
+      result.textContent = assistantReply(status.result);
+      appendTimeline(
+        "storage",
+        "Workflow events committed in LightningFS and pushed to the Hub",
+      );
+      break;
+    case "error":
+      showError(status.message);
+      break;
+  }
+}
+
+async function bootstrap(): Promise<void> {
+  setState(deployment, "Creating deployment", "pending");
+  appendTimeline("hub", "Publishing and deploying the bundled workflow");
+  try {
+    const response = await fetch("/api/bootstrap", { method: "POST" });
+    const body: unknown = await response.json();
+    if (!response.ok) throw responseError(body, response.status);
+    const deployed = BootstrapResponse.assert(body);
+    appendTimeline("hub", `Hub deployment ${deployed.deploymentId} created`);
+  } catch (cause) {
+    showError(cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
+async function trigger(value: string): Promise<void> {
+  const trimmed = value.trim();
+  if (trimmed === "") return;
+  submit.disabled = true;
+  result.textContent = "Delivering prompt through the Hub…";
+  appendTimeline("trigger", trimmed);
+  try {
+    const response = await fetch("/api/trigger", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: trimmed }),
+    });
+    const body: unknown = await response.json();
+    if (!response.ok) throw responseError(body, response.status);
+    const triggered = TriggerResponse.assert(body);
+    activeMessageId = triggered.messageId;
+  } catch (cause) {
+    submit.disabled = false;
+    showError(cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
+function assistantReply(value: unknown): string {
+  if (typeof value !== "object" || value === null) {
+    return JSON.stringify(value);
+  }
+  const turns = Reflect.get(value, "turns");
+  if (!Array.isArray(turns)) return JSON.stringify(value, null, 2);
+  for (const turn of turns.toReversed()) {
+    if (
+      typeof turn !== "object" ||
+      turn === null ||
+      Reflect.get(turn, "role") !== "assistant"
+    ) {
+      continue;
+    }
+    const content = Reflect.get(turn, "content");
+    if (!Array.isArray(content)) continue;
+    const text = content.flatMap((block) => {
+      if (
+        typeof block === "object" &&
+        block !== null &&
+        Reflect.get(block, "type") === "text"
+      ) {
+        const blockText = Reflect.get(block, "text");
+        return typeof blockText === "string" ? [blockText] : [];
+      }
+      return [];
+    });
+    if (text.length > 0) return text.join("\n");
+  }
+  return JSON.stringify(value, null, 2);
+}
+
+function isBrowserWorkflowModule(
+  value: unknown,
+): value is BrowserWorkflowModule {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof Reflect.get(value, "connect") === "function" &&
+    typeof Reflect.get(value, "subscribeStatus") === "function"
+  );
+}
+
+function appendTimeline(kind: string, message: string): void {
+  const item = document.createElement("li");
+  const label = document.createElement("span");
+  const text = document.createElement("span");
+  label.className = "timeline-label";
+  label.textContent = kind;
+  text.textContent = message;
+  item.append(label, text);
+  timeline.prepend(item);
+}
+
+function setState(
+  element: DemoElement,
+  text: string,
+  state: "pending" | "success" | "error",
+): void {
+  element.textContent = text;
+  element.dataset["state"] = state;
+}
+
+function showError(message: string): void {
+  setState(execution, "Failed", "error");
+  result.textContent = message;
+  appendTimeline("error", message);
+}
+
+function responseError(body: unknown, status: number): Error {
+  if (typeof body === "object" && body !== null) {
+    const message = Reflect.get(body, "error");
+    if (typeof message === "string") return new Error(message);
+  }
+  return new Error(`Demo request failed with ${String(status)}`);
+}
+
+function getWorkflowBundleURL(): string {
+  return __BROWSER_WORKFLOW_BUNDLE_URL__;
+}
+
+function requiredHTMLElement(id: string): DemoElement {
+  const element = document.getElementById(id);
+  if (!isDemoElement(element)) throw new Error(`Missing #${id}`);
+  return element;
+}
+
+function requiredForm(id: string): DemoFormElement {
+  const element = document.getElementById(id);
+  if (!isDemoFormElement(element)) throw new Error(`Missing #${id}`);
+  return element;
+}
+
+function requiredTextArea(id: string): DemoTextAreaElement {
+  const element = document.getElementById(id);
+  if (!isDemoTextAreaElement(element)) throw new Error(`Missing #${id}`);
+  return element;
+}
+
+function requiredButton(id: string): DemoButtonElement {
+  const element = document.getElementById(id);
+  if (!isDemoButtonElement(element)) throw new Error(`Missing #${id}`);
+  return element;
+}
+
+function isDemoElement(value: unknown): value is DemoElement {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "textContent" in value &&
+    typeof Reflect.get(value, "append") === "function"
+  );
+}
+
+function isDemoFormElement(value: unknown): value is DemoFormElement {
+  return (
+    isDemoElement(value) &&
+    typeof Reflect.get(value, "addEventListener") === "function"
+  );
+}
+
+function isDemoTextAreaElement(value: unknown): value is DemoTextAreaElement {
+  return (
+    isDemoElement(value) && typeof Reflect.get(value, "value") === "string"
+  );
+}
+
+function isDemoButtonElement(value: unknown): value is DemoButtonElement {
+  return (
+    isDemoElement(value) && typeof Reflect.get(value, "disabled") === "boolean"
+  );
+}

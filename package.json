@@ -1,0 +1,18 @@
+{
+  "name": "interchange-browser-sidecar-demo",
+  "version": "0.1.0",
+  "license": "LGPL-2.1-only",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "arktype": "2.1.20"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "typescript": "^7.0.2"
+  }
+}
