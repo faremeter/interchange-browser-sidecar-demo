@@ -67,11 +67,12 @@
         padding-left: 24px;
       }
       #timeline li {
+        display: grid;
+        grid-template-columns: 11rem 1fr;
+        gap: 1rem;
         margin: 8px 0;
       }
       .timeline-label {
-        display: inline-block;
-        min-width: 7rem;
         font-family: ui-monospace, monospace;
       }
       @media (max-width: 600px) {
@@ -114,8 +115,7 @@
         <form id="prompt-form">
           <label for="prompt">Claim to fact-check</label>
           <textarea id="prompt">
-Fact check this claim: Sydney is the capital of Australia. Keep the answer concise.</textarea
-          >
+Fact check this claim: Sydney is the capital of Australia. Keep the answer concise.</textarea>
           <button id="submit" type="submit" disabled>Run in browser</button>
         </form>
 

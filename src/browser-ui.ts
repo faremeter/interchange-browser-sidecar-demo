@@ -37,6 +37,15 @@ const BrowserConfigResponse = type({
   sidecarToken: "string",
 });
 const TriggerResponse = type({ messageId: "string" });
+const BrowserWorkflowResult = type({
+  childEventKinds: "string[]",
+  childRunId: "string",
+  childRunIds: "string[]",
+  deploymentId: "string",
+  parentEventKinds: "string[]",
+  parentRunId: "string",
+  terminalStatus: "'completed' | 'failed' | 'cancelled'",
+});
 
 type BrowserHubLinkStatus =
   | { kind: "connecting" }
@@ -73,6 +82,7 @@ const userAgent = requiredHTMLElement("user-agent");
 
 let activeMessageId: string | undefined;
 let bootstrapStarted = false;
+let parentEventCount = 0;
 
 userAgent.textContent = navigator.userAgent;
 form.addEventListener("submit", (event) => {
@@ -87,8 +97,8 @@ try {
 }
 
 async function start(): Promise<void> {
-  appendTimeline("page", "Browser bundle loaded");
   const workflowBundleURL = getWorkflowBundleURL();
+  appendTimeline("bundle.load", workflowBundleURL);
   const candidate: unknown = await import(workflowBundleURL);
   if (!isBrowserWorkflowModule(candidate)) {
     throw new Error("Browser workflow bundle has an invalid public API");
@@ -108,11 +118,11 @@ function handleStatus(status: BrowserHubLinkStatus): void {
   switch (status.kind) {
     case "connecting":
       setState(connection, "Connecting", "pending");
-      appendTimeline("websocket", "Connecting to the ordinary Hub");
+      appendTimeline("ws.connect", "Opening sidecar WebSocket to Hub");
       break;
     case "connected":
       setState(connection, "Connected", "success");
-      appendTimeline("websocket", "Browser registered as a sidecar");
+      appendTimeline("sidecar.register", "Browser registered with Hub");
       if (!bootstrapStarted) {
         bootstrapStarted = true;
         void bootstrap();
@@ -122,10 +132,7 @@ function handleStatus(status: BrowserHubLinkStatus): void {
       setState(deployment, "Deployed", "success");
       setState(execution, "Ready", "success");
       submit.disabled = false;
-      appendTimeline(
-        "deployment",
-        `Workflow activated as ${status.agentAddress}`,
-      );
+      appendTimeline("agent.deploy", status.agentAddress);
       break;
     case "running":
       activeMessageId = status.messageId;
@@ -133,8 +140,8 @@ function handleStatus(status: BrowserHubLinkStatus): void {
       submit.disabled = true;
       result.textContent = "The browser agent is calling its tool and model…";
       appendTimeline(
-        "execution",
-        "Trigger received; browser agent loop started",
+        "mail.inbound",
+        `${status.messageId} -> ${status.agentAddress}`,
       );
       break;
     case "completed":
@@ -147,10 +154,7 @@ function handleStatus(status: BrowserHubLinkStatus): void {
       setState(execution, "Completed", "success");
       submit.disabled = false;
       result.textContent = assistantReply(status.result);
-      appendTimeline(
-        "storage",
-        "Workflow events committed in LightningFS and pushed to the Hub",
-      );
+      appendCompletedRun(status.result);
       break;
     case "error":
       showError(status.message);
@@ -160,13 +164,13 @@ function handleStatus(status: BrowserHubLinkStatus): void {
 
 async function bootstrap(): Promise<void> {
   setState(deployment, "Creating deployment", "pending");
-  appendTimeline("hub", "Publishing and deploying the bundled workflow");
+  appendTimeline("asset.publish", "Publishing bundled workflow to Hub");
   try {
     const response = await fetch("/api/bootstrap", { method: "POST" });
     const body: unknown = await response.json();
     if (!response.ok) throw responseError(body, response.status);
     const deployed = BootstrapResponse.assert(body);
-    appendTimeline("hub", `Hub deployment ${deployed.deploymentId} created`);
+    appendTimeline("deployment.create", deployed.deploymentId);
   } catch (cause) {
     showError(cause instanceof Error ? cause.message : String(cause));
   }
@@ -177,7 +181,7 @@ async function trigger(value: string): Promise<void> {
   if (trimmed === "") return;
   submit.disabled = true;
   result.textContent = "Delivering prompt through the Hub…";
-  appendTimeline("trigger", trimmed);
+  appendTimeline("trigger.request", trimmed);
   try {
     const response = await fetch("/api/trigger", {
       method: "POST",
@@ -188,10 +192,33 @@ async function trigger(value: string): Promise<void> {
     if (!response.ok) throw responseError(body, response.status);
     const triggered = TriggerResponse.assert(body);
     activeMessageId = triggered.messageId;
+    appendTimeline("trigger.message", triggered.messageId);
   } catch (cause) {
     submit.disabled = false;
     showError(cause instanceof Error ? cause.message : String(cause));
   }
+}
+
+function appendCompletedRun(value: unknown): void {
+  const completed = BrowserWorkflowResult(value);
+  if (completed instanceof type.errors) {
+    appendTimeline("protocol.error", completed.summary);
+    return;
+  }
+  const parentEvents = completed.parentEventKinds.slice(parentEventCount);
+  parentEventCount = completed.parentEventKinds.length;
+  appendTimeline("repo", `workflow-run/${completed.deploymentId}`);
+  appendTimeline("parent.run", completed.parentRunId);
+  appendTimeline(
+    "parent.events",
+    parentEvents.length === 0 ? "no new events" : parentEvents.join(" -> "),
+  );
+  appendTimeline(
+    "child.run",
+    `${completed.childRunId} (${completed.terminalStatus}); all: ${completed.childRunIds.join(", ")}`,
+  );
+  appendTimeline("child.events", completed.childEventKinds.join(" -> "));
+  appendTimeline("repo.push", `workflow-run/${completed.deploymentId} -> Hub`);
 }
 
 function assistantReply(value: unknown): string {
