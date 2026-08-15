@@ -11,3 +11,75 @@ diff --git a/bin/seed.ts b/bin/seed.ts
 -    `/api/tenants/${acmeTenantId}/catalog/offerings`,
 +    `/api/tenants/${acmeTenantId}/catalog/offerings?limit=100`,
      undefined,
+diff --git a/packages/inference/src/providers/anthropic.test.ts b/packages/inference/src/providers/anthropic.test.ts
+--- a/packages/inference/src/providers/anthropic.test.ts
++++ b/packages/inference/src/providers/anthropic.test.ts
+@@ -100,1 +100,23 @@
++describe("Anthropic adapter — direct browser access", () => {
++  test("omits the browser access header by default", () => {
++    const request = createAnthropicAdapter(TEST_SOURCE).buildRequest(
++      [],
++      "claude",
++      {},
++    );
++    expect(request.headers).not.toHaveProperty(
++      "anthropic-dangerous-direct-browser-access",
++    );
++  });
++
++  test("adds the browser access header when explicitly configured", () => {
++    const request = createAnthropicAdapter(TEST_SOURCE, {
++      directBrowserAccess: true,
++    }).buildRequest([], "claude", {});
++    expect(request.headers["anthropic-dangerous-direct-browser-access"]).toBe(
++      "true",
++    );
++  });
++});
++
+ describe("Anthropic parser — index propagation on delta events", () => {
+diff --git a/packages/inference/src/providers/anthropic.ts b/packages/inference/src/providers/anthropic.ts
+--- a/packages/inference/src/providers/anthropic.ts
++++ b/packages/inference/src/providers/anthropic.ts
+@@ -63,3 +63,4 @@
+   model: string,
+   options: InferenceOptions,
++  directBrowserAccess = false,
+ ): BuiltRequest {
+@@ -142,3 +143,6 @@
+       "x-api-key": CREDENTIAL_SENTINEL,
+       "anthropic-version": "2023-06-01",
++      ...(directBrowserAccess
++        ? { "anthropic-dangerous-direct-browser-access": "true" }
++        : {}),
+     },
+@@ -1105,7 +1109,5 @@
+-// The anthropic adapter carries no per-source accommodations today, so its
+-// quirks shape is empty. A quirks bag is deployment configuration crossing
+-// into the system at this boundary; rejecting unknown keys makes a
+-// misconfigured bag — for example an openai quirk pasted onto an anthropic
+-// source — fail loudly here rather than run silently ignored.
+-export const AnthropicQuirks = type({ "+": "reject" });
++export const AnthropicQuirks = type({
++  "directBrowserAccess?": "boolean",
++  "+": "reject",
++});
+ export type AnthropicQuirks = typeof AnthropicQuirks.infer;
+@@ -1126,3 +1128,9 @@
+   return {
+-    buildRequest,
++    buildRequest: (messages, model, options) =>
++      buildRequest(
++        messages,
++        model,
++        options,
++        parsedQuirks.directBrowserAccess === true,
++      ),
+     parseResponse: (sseData) =>
+diff --git a/tests/inference/providers/anthropic.test.ts b/tests/inference/providers/anthropic.test.ts
+--- a/tests/inference/providers/anthropic.test.ts
++++ b/tests/inference/providers/anthropic.test.ts
+@@ -1218,2 +1218,2 @@ describe("Anthropic adapter: quirks", () => {
+-  test("rejects a populated quirks bag since it declares no quirks", () => {
++  test("rejects an unknown quirk", () => {
+     expect(() =>
