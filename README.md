@@ -52,6 +52,8 @@ inspect that tab.
 ## What the demo proves
 
 - The browser registers directly on the Hub's ordinary sidecar WebSocket.
+- The demo registers the supplied Anthropic key as a tenant-owned catalog
+  offering and deploys with that durable offering ID.
 - The Hub delivers the deployment and trigger to the browser tab.
 - The agent calls `browser_info`, which reads `navigator.userAgent` in the tab.
 - The Anthropic request originates from the browser and appears in its network

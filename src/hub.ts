@@ -6,6 +6,16 @@ import { type } from "arktype";
 
 const AssetResponse = type({ id: "string", name: "string" });
 const AssetListResponse = AssetResponse.array();
+const IdNameResponse = type({ id: "string", name: "string" });
+const IdNameListResponse = type({ data: IdNameResponse.array() });
+const ModelResponse = type({ id: "string", canonicalName: "string" });
+const ModelListResponse = type({ data: ModelResponse.array() });
+const OfferingResponse = type({
+  id: "string",
+  modelId: "string",
+  providerId: "string",
+});
+const OfferingListResponse = type({ data: OfferingResponse.array() });
 const DeploymentResponse = type({ id: "string" });
 const GitTokenResponse = type({ secret: "string" });
 const MailResponse = type({ messageId: "string" });
@@ -13,6 +23,8 @@ const PrincipalResponse = type({ tenantId: "string", tenantSlug: "string" });
 const PrincipalListResponse = type({ data: PrincipalResponse.array() });
 
 const ASSET_NAME = "browser-bundled-fact-check";
+const INFERENCE_PROVIDER_NAME = "Browser Demo Anthropic";
+const INFERENCE_CREDENTIAL_NAME = "Browser Demo Anthropic Key";
 
 export type InferenceSource = {
   apiKey: string;
@@ -82,6 +94,11 @@ export function createDemoHubClient(options: DemoHubClientOptions) {
   async function bootstrap(source: InferenceSource) {
     const cookie = await authenticate();
     const resolvedTenantId = await resolveTenantId(cookie);
+    const catalogSource = await ensureCatalogSource(
+      (method, pathname, body) => rawAPI(cookie, method, pathname, body),
+      resolvedTenantId,
+      source,
+    );
     const asset = await ensureWorkflowAsset(cookie, resolvedTenantId);
     await pushWorkflow(cookie, resolvedTenantId, asset.name);
     const deployment = DeploymentResponse.assert(
@@ -91,8 +108,8 @@ export function createDemoHubClient(options: DemoHubClientOptions) {
         `/api/tenants/${resolvedTenantId}/workflows/deployments`,
         {
           assetId: asset.id,
-          sources: [source],
-          defaultSource: source.id,
+          sources: [catalogSource],
+          defaultSource: catalogSource.id,
         },
       ),
     );
@@ -248,6 +265,139 @@ export function createDemoHubClient(options: DemoHubClientOptions) {
   }
 
   return { bootstrap, trigger };
+}
+
+type APIResult = { response: Response; body: unknown };
+type HubRequest = (
+  method: string,
+  pathname: string,
+  body?: unknown,
+) => Promise<APIResult>;
+
+export async function ensureCatalogSource(
+  request: HubRequest,
+  tenantId: string,
+  source: InferenceSource,
+): Promise<InferenceSource> {
+  const provider = await createOrFind({
+    request,
+    createPath: `/api/tenants/${tenantId}/providers`,
+    createBody: {
+      name: INFERENCE_PROVIDER_NAME,
+      plugin: source.provider,
+      apiBaseUrl: source.baseURL,
+    },
+    listPath: `/api/tenants/${tenantId}/providers?inherited=false&limit=100`,
+    response: IdNameResponse,
+    listResponse: IdNameListResponse,
+    matches: (candidate) => candidate.name === INFERENCE_PROVIDER_NAME,
+    label: "browser demo integration provider",
+  });
+  const credential = await createOrFind({
+    request,
+    createPath: `/api/tenants/${tenantId}/credentials`,
+    createBody: {
+      providerId: provider.id,
+      name: INFERENCE_CREDENTIAL_NAME,
+      type: "api_key",
+      secret: source.apiKey,
+      scopes: ["chat"],
+    },
+    listPath: `/api/tenants/${tenantId}/credentials?owner=org&limit=100`,
+    response: IdNameResponse,
+    listResponse: IdNameListResponse,
+    matches: (candidate) => candidate.name === INFERENCE_CREDENTIAL_NAME,
+    label: "browser demo credential",
+  });
+  await successfulRequest(
+    request,
+    "PATCH",
+    `/api/tenants/${tenantId}/credentials/${credential.id}`,
+    { secret: source.apiKey, status: "active" },
+  );
+  const model = await createOrFind({
+    request,
+    createPath: `/api/tenants/${tenantId}/catalog/models`,
+    createBody: { canonicalName: source.model, displayName: source.model },
+    listPath: `/api/tenants/${tenantId}/catalog/models?limit=100`,
+    response: ModelResponse,
+    listResponse: ModelListResponse,
+    matches: (candidate) => candidate.canonicalName === source.model,
+    label: `model ${source.model}`,
+  });
+  const catalogProvider = await createOrFind({
+    request,
+    createPath: `/api/tenants/${tenantId}/catalog/providers`,
+    createBody: {
+      name: INFERENCE_PROVIDER_NAME,
+      plugin: source.provider,
+      baseURL: source.baseURL,
+      credentialId: credential.id,
+    },
+    listPath: `/api/tenants/${tenantId}/catalog/providers?limit=100`,
+    response: IdNameResponse,
+    listResponse: IdNameListResponse,
+    matches: (candidate) => candidate.name === INFERENCE_PROVIDER_NAME,
+    label: "browser demo catalog provider",
+  });
+  const offering = await createOrFind({
+    request,
+    createPath: `/api/tenants/${tenantId}/catalog/offerings`,
+    createBody: {
+      modelId: model.id,
+      providerId: catalogProvider.id,
+      capabilities: ["function-calling"],
+      quirks: source.quirks,
+    },
+    listPath: `/api/tenants/${tenantId}/catalog/offerings?limit=100`,
+    response: OfferingResponse,
+    listResponse: OfferingListResponse,
+    matches: (candidate) =>
+      candidate.modelId === model.id &&
+      candidate.providerId === catalogProvider.id,
+    label: "browser demo catalog offering",
+  });
+  return { ...source, id: offering.id };
+}
+
+type ResponseSchema<T> = { assert(value: unknown): T };
+
+async function createOrFind<T>(args: {
+  request: HubRequest;
+  createPath: string;
+  createBody: unknown;
+  listPath: string;
+  response: ResponseSchema<T>;
+  listResponse: ResponseSchema<{ data: T[] }>;
+  matches(candidate: T): boolean;
+  label: string;
+}): Promise<T> {
+  const created = await args.request("POST", args.createPath, args.createBody);
+  if (created.response.status === 201) {
+    return args.response.assert(created.body);
+  }
+  if (created.response.status !== 409) {
+    throw apiError(`create ${args.label}`, created);
+  }
+  const listed = await successfulRequest(args.request, "GET", args.listPath);
+  const existing = args.listResponse.assert(listed).data.find(args.matches);
+  if (existing === undefined) {
+    throw new Error(
+      `Hub reported duplicate ${args.label}, but did not list it`,
+    );
+  }
+  return existing;
+}
+
+async function successfulRequest(
+  request: HubRequest,
+  method: string,
+  pathname: string,
+  body?: unknown,
+): Promise<unknown> {
+  const result = await request(method, pathname, body);
+  if (!result.response.ok) throw apiError(`${method} ${pathname}`, result);
+  return result.body;
 }
 
 function apiError(
