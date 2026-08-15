@@ -1,0 +1,13 @@
+diff --git a/bin/seed.ts b/bin/seed.ts
+--- a/bin/seed.ts
++++ b/bin/seed.ts
+@@ -884,3 +884,3 @@
+   "GET",
+-  `/api/tenants/${acmeTenantId}/catalog/models`,
++  `/api/tenants/${acmeTenantId}/catalog/models?limit=100`,
+   undefined,
+@@ -1015,3 +1015,3 @@
+     "GET",
+-    `/api/tenants/${acmeTenantId}/catalog/offerings`,
++    `/api/tenants/${acmeTenantId}/catalog/offerings?limit=100`,
+     undefined,

@@ -16,6 +16,7 @@ Start a clean Interchange Hub without the production sidecar:
 
 ```bash
 cd ../interchange
+git apply ../interchange-browser-sidecar-demo/integration/interchange-hub.patch
 bin/db-reset --clean
 bin/dev --seed --no-sidecar
 ```
