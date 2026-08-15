@@ -2,6 +2,8 @@ import path from "node:path";
 
 import { type } from "arktype";
 
+import { buildBrowserWorkflow } from "./browser-workflow/build";
+import { authoredWorkflow } from "./browser-workflow/workflow";
 import { createDemoHubClient, type InferenceSource } from "./hub";
 
 const TriggerRequest = type({ prompt: "string" });
@@ -16,9 +18,10 @@ const SIDECAR_ID = Bun.env.BROWSER_SIDECAR_ID ?? "browser-demo";
 const SIDECAR_TOKEN = Bun.env.BROWSER_SIDECAR_TOKEN ?? "browser-demo-token";
 const PUBLIC_DIRECTORY = path.join(import.meta.dir, "../public");
 
-const workflowDefinition = WorkflowDefinition.assert(
-  await Bun.file(path.join(PUBLIC_DIRECTORY, "workflow.json")).json(),
-);
+const workflowDefinition = WorkflowDefinition.assert(authoredWorkflow);
+const browserWorkflow = await buildBrowserWorkflow({
+  entrypoint: path.join(import.meta.dir, "browser-workflow/workflow.ts"),
+});
 const browserUI = await buildBrowserUI();
 const hub = createDemoHubClient({
   hubURL: HUB_HTTP_URL,
@@ -54,10 +57,7 @@ const server = Bun.serve({
         return javascriptResponse(browserUI);
       }
       if (request.method === "GET" && url.pathname === "/browser-workflow.js") {
-        return fileResponse(
-          "browser-workflow.js",
-          "text/javascript; charset=utf-8",
-        );
+        return javascriptResponse(browserWorkflow.source);
       }
       if (request.method === "GET" && url.pathname === "/api/config") {
         return Response.json({

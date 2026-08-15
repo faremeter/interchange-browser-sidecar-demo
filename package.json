@@ -5,11 +5,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "bun run src/server.ts",
-    "typecheck": "bunx tsc --noEmit"
+    "prepare:interchange": "bun run src/link-interchange.ts",
+    "start": "bun run prepare:interchange && bun --conditions=intx-src run src/server.ts",
+    "test": "bun test",
+    "typecheck": "bun run prepare:interchange && bunx tsc --noEmit"
   },
   "dependencies": {
-    "arktype": "2.1.20"
+    "arktype": "2.1.29",
+    "isomorphic-git": "^1.27.2"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",

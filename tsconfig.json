@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "allowImportingTsExtensions": false,
+    "customConditions": ["intx-src"],
     "exactOptionalPropertyTypes": true,
     "lib": ["ESNext"],
     "module": "Preserve",

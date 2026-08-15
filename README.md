@@ -6,9 +6,9 @@ authorization, and the durable workflow-run repository. The browser owns the
 workflow runtime, agent loop, direct Anthropic request, browser-only tool, and
 LightningFS working repository.
 
-The repository does not import or link any `@intx/*` packages. Its checked-in
-`public/browser-workflow.js` is generated from the browser-sidecar example in
-the Interchange repository.
+The browser runtime source lives in this repository. `bun start` bundles it in
+memory against the sibling Interchange checkout and serves the result; no
+generated JavaScript or workflow definition is checked in.
 
 ## Run the demo
 
@@ -38,6 +38,7 @@ bin/provision-sidecar
 Then install and run this demo:
 
 ```bash
+cd ../interchange-browser-sidecar-demo
 bun install
 ANTHROPIC_API_KEY=... bun start
 ```
@@ -46,6 +47,7 @@ Open <http://127.0.0.1:4174>.
 
 Use only a temporary, restricted Anthropic key. Direct browser inference means
 the key is sent to the tab in the deployment and is visible to anyone who can
+inspect that tab.
 
 ## What the demo proves
 
@@ -58,19 +60,15 @@ the key is sent to the tab in the deployment and is visible to anyone who can
   existing workflow-run pack protocol.
 - Closing the tab removes the execution host.
 
-The Bun server only serves the demo, publishes its static `workflow.json`, and
-calls ordinary Hub APIs to deploy and trigger it. It does not execute the
-workflow or agent.
+The Bun server builds and serves the browser runtime from TypeScript, publishes
+the workflow definition exported by that same source, and calls ordinary Hub
+APIs to deploy and trigger it. It does not execute the workflow or agent.
 
-## Refresh the generated runtime
+## Browser runtime source
 
-From the Interchange repository:
-
-```bash
-bun --conditions=intx-src \
-  examples/browser-sidecar/src/export.ts \
-  ../interchange-browser-sidecar-demo/public
-```
-
-Commit both generated files together because the Hub definition and executable
-bundle describe the same workflow.
+The reviewable browser implementation is under `src/browser-workflow/`. It was
+extracted from the Interchange browser-sidecar spike. The start and type-check
+commands link the Interchange workspace packages into this repository, so run
+`bun install` in that checkout first. Set `INTERCHANGE_SOURCE_DIR` if the
+repositories are not siblings. The Hub definition and executable workflow are
+exported from the same source module so they cannot drift independently.
