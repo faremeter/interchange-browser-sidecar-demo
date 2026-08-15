@@ -1,0 +1,36 @@
+diff --git a/apps/hub/package.json b/apps/hub/package.json
+index 9555bac7..9c4afe51 100644
+--- a/apps/hub/package.json
++++ b/apps/hub/package.json
+@@ -6,6 +6,7 @@
+   "private": true,
+   "type": "module",
+   "dependencies": {
++    "@intx/browser-sidecar-demo-provisioner": "link:@intx/browser-sidecar-demo-provisioner",
+     "@intx/crypto": "workspace:*",
+     "@intx/db": "workspace:*",
+     "@intx/hub-api": "workspace:*",
+diff --git a/apps/hub/src/index.ts b/apps/hub/src/index.ts
+index a826a1de..81610429 100644
+--- a/apps/hub/src/index.ts
++++ b/apps/hub/src/index.ts
+@@ -31,6 +31,7 @@ import { generateKeyPair } from "@intx/crypto";
+ import { hexEncode } from "@intx/types";
+ import { upgradeWebSocket, websocket } from "hono/bun";
+ import { setup, getLogger } from "@intx/log";
++import { sidecarProvisioner } from "@intx/browser-sidecar-demo-provisioner";
+
+ await setup();
+
+@@ -261,7 +262,10 @@ const sessionService = createSessionService({
+ // The in-tree Hub ships without an infrastructure backend; deployments that
+ // require exclusive placement therefore fail closed until an operator build
+ // registers a provisioner here.
+-const sidecarPlugins = createSidecarPluginRegistry({ provisioners: [] });
++const sidecarPlugins = createSidecarPluginRegistry({
++  provisioners: [sidecarProvisioner],
++  defaultProvisionerId: sidecarProvisioner.id,
++});
+ const workflowAllocationService = createWorkflowAllocationService({
+   db,
+   plugins: sidecarPlugins,

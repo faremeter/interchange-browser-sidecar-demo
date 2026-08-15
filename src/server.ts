@@ -2,20 +2,39 @@ import path from "node:path";
 
 import { type } from "arktype";
 
+import {
+  createBrowserProvisioningBroker,
+  type DestroyBrowserSidecarRequest,
+  type EnsureBrowserSidecarRequest,
+} from "./browser-provisioning";
 import { buildBrowserWorkflow } from "./browser-workflow/build";
 import { authoredWorkflow } from "./browser-workflow/workflow";
 import { createDemoHubClient, type InferenceSource } from "./hub";
 
 const TriggerRequest = type({ prompt: "string" });
+const BrowserRequest = type({ browserId: "string" });
+const EnsureBrowserSidecarRequest = type({
+  allocationId: "string",
+  generation: "number",
+  tenantId: "string",
+  anchorRunId: "string",
+  sidecarId: "string",
+  token: "string",
+  hubWebSocketUrl: "string",
+});
+const DestroyBrowserSidecarRequest = type({
+  allocationId: "string",
+  generation: "number",
+  sidecarId: "string",
+  "externalRef?": "string",
+});
 const WorkflowDefinition = type("Record<string, unknown>");
 
 const HOST = Bun.env.BROWSER_DEMO_HOST ?? "127.0.0.1";
 const PORT = readPort(Bun.env.BROWSER_DEMO_PORT ?? "4174");
 const HUB_HTTP_URL = Bun.env.BROWSER_HUB_HTTP_URL ?? "http://127.0.0.1:3000";
-const HUB_WS_URL =
-  Bun.env.BROWSER_HUB_WS_URL ?? "ws://127.0.0.1:3000/api/sidecars/ws";
-const SIDECAR_ID = Bun.env.BROWSER_SIDECAR_ID ?? "browser-demo";
-const SIDECAR_TOKEN = Bun.env.BROWSER_SIDECAR_TOKEN ?? "browser-demo-token";
+const CONTROL_TOKEN =
+  Bun.env.BROWSER_DEMO_CONTROL_TOKEN ?? "local-browser-sidecar-demo";
 const PUBLIC_DIRECTORY = path.join(import.meta.dir, "../public");
 
 const workflowDefinition = WorkflowDefinition.assert(authoredWorkflow);
@@ -23,6 +42,7 @@ const browserWorkflow = await buildBrowserWorkflow({
   entrypoint: path.join(import.meta.dir, "browser-workflow/workflow.ts"),
 });
 const browserUI = await buildBrowserUI();
+const provisioning = createBrowserProvisioningBroker();
 const hub = createDemoHubClient({
   hubURL: HUB_HTTP_URL,
   workflowDefinition,
@@ -59,15 +79,56 @@ const server = Bun.serve({
       if (request.method === "GET" && url.pathname === "/browser-workflow.js") {
         return javascriptResponse(browserWorkflow.source);
       }
-      if (request.method === "GET" && url.pathname === "/api/config") {
-        return Response.json({
-          hubWebSocketURL: HUB_WS_URL,
-          sidecarId: SIDECAR_ID,
-          sidecarToken: SIDECAR_TOKEN,
-        });
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/browser/register"
+      ) {
+        return Response.json({ browserId: provisioning.registerBrowser() });
       }
       if (request.method === "POST" && url.pathname === "/api/bootstrap") {
+        const { browserId } = BrowserRequest.assert(await request.json());
+        provisioning.activateBrowser(browserId);
         return Response.json(await bootstrap());
+      }
+      if (request.method === "GET" && url.pathname === "/api/browser/events") {
+        const browserId = url.searchParams.get("browserId");
+        if (browserId === null || browserId === "") {
+          return Response.json(
+            { error: "browserId is required" },
+            { status: 400 },
+          );
+        }
+        const event = await provisioning.nextEvent(browserId);
+        return Response.json(event ?? { kind: "heartbeat" });
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/browser/unregister"
+      ) {
+        const { browserId } = BrowserRequest.assert(await request.json());
+        provisioning.unregisterBrowser(browserId);
+        return new Response(null, { status: 204 });
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/provisioner/ensure"
+      ) {
+        const unauthorized = authorizeProvisioner(request);
+        if (unauthorized !== null) return unauthorized;
+        const body: EnsureBrowserSidecarRequest =
+          EnsureBrowserSidecarRequest.assert(await request.json());
+        return Response.json(provisioning.ensure(body));
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/provisioner/destroy"
+      ) {
+        const unauthorized = authorizeProvisioner(request);
+        if (unauthorized !== null) return unauthorized;
+        const body: DestroyBrowserSidecarRequest =
+          DestroyBrowserSidecarRequest.assert(await request.json());
+        provisioning.destroy(body);
+        return Response.json({ kind: "destroyed" });
       }
       if (request.method === "POST" && url.pathname === "/api/trigger") {
         const active = deployment ?? (await bootstrap());
@@ -161,6 +222,13 @@ function javascriptResponse(source: string): Response {
       "content-type": "text/javascript; charset=utf-8",
     },
   });
+}
+
+function authorizeProvisioner(request: Request): Response | null {
+  if (request.headers.get("authorization") === `Bearer ${CONTROL_TOKEN}`) {
+    return null;
+  }
+  return Response.json({ error: "Unauthorized provisioner" }, { status: 401 });
 }
 
 function readPort(value: string): number {

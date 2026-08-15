@@ -123,12 +123,14 @@ const deployedSection: OnTriggerPrimitive = {
 /** Definition stored in the ordinary Hub workflow asset. */
 export const authoredWorkflow = defineWorkflow({
   id: "browser-bundled-workflow",
+  sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
   steps: { [SECTION_ID]: authoredSection },
 });
 
 /** Equivalent deployment projection consumed by the prebundled runtime. */
 export const workflow = defineWorkflow({
   id: authoredWorkflow.id,
+  sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
   steps: { [SECTION_ID]: deployedSection },
 });
 
@@ -173,6 +175,7 @@ type BrowserDeploymentRuntime = {
 };
 
 let activeRuntime: BrowserDeploymentRuntime | undefined;
+let activeHubLink: BrowserHubLink | undefined;
 let triggerQueue = Promise.resolve();
 let connectPromise: Promise<void> | undefined;
 const deploymentKeys = new Map<string, KeyPair>();
@@ -218,8 +221,24 @@ export function connect(options: ConnectBrowserWorkflowOptions): Promise<void> {
       for (const listener of statusListeners) listener(status);
     },
   });
+  activeHubLink = link;
   connectPromise = link.connect();
   return connectPromise;
+}
+
+export async function disconnect(): Promise<void> {
+  const runtime = activeRuntime;
+  activeRuntime = undefined;
+  activeHubLink?.close();
+  activeHubLink = undefined;
+  connectPromise = undefined;
+  deploymentKeys.clear();
+  runGrants.clear();
+  triggerQueue = Promise.resolve();
+  if (runtime?.parentRun !== undefined) {
+    void runtime.parentRun.cancel("self", "sidecar allocation destroyed");
+    await runtime.parentRun.complete.catch(() => undefined);
+  }
 }
 
 async function deploy(

@@ -8,39 +8,47 @@ LightningFS working repository.
 
 The browser runtime source lives in this repository. `bun start` bundles it in
 memory against the sibling Interchange checkout and serves the result; no
-generated JavaScript or workflow definition is checked in.
+generated JavaScript or workflow definition is checked in. This repository
+includes the provisioner package `@intx/browser-sidecar-demo-provisioner`; a
+small Hub patch links that package as a local dependency and registers it
+directly.
 
 ## Run the demo
+
+Install the demo dependencies and register its provisioner package with Bun:
+
+```bash
+cd ../interchange-browser-sidecar-demo
+bun install
+cd packages/provisioner
+bun link
+```
 
 Start a clean Interchange Hub without the production sidecar:
 
 ```bash
 cd ../interchange
 git apply ../interchange-browser-sidecar-demo/integration/interchange-hub.patch
+git apply ../interchange-browser-sidecar-demo/integration/interchange-browser-provisioner.patch
+bun install
 bin/db-reset --clean
-bin/dev --seed --no-sidecar
 ```
 
-In another terminal, provision the identity used by the browser:
-
-```bash
-cd ../interchange
-set -a
-source .env
-source .env.migrate
-set +a
-
-SIDECAR_ID=browser-demo \
-SIDECAR_TOKEN=browser-demo-token \
-bin/provision-sidecar
-```
-
-Then install and run this demo:
+Start the demo server in another terminal:
 
 ```bash
 cd ../interchange-browser-sidecar-demo
-bun install
-ANTHROPIC_API_KEY=... bun start
+BROWSER_DEMO_CONTROL_TOKEN=browser-demo-local \
+ANTHROPIC_API_KEY=... \
+bun start
+```
+
+Then start the Hub without the production sidecar:
+
+```bash
+cd ../interchange
+BROWSER_DEMO_CONTROL_TOKEN=browser-demo-local \
+bin/dev --seed --no-sidecar
 ```
 
 Open <http://127.0.0.1:4174>.
@@ -52,6 +60,10 @@ inspect that tab.
 ## What the demo proves
 
 - The browser registers directly on the Hub's ordinary sidecar WebSocket.
+- The workflow requests exclusive, same-deployment sidecar placement.
+- Hub calls the linked `SidecarProvisioner` exported by this repository; it
+  assigns Hub-generated, allocation-scoped credentials to the waiting browser
+  tab.
 - The demo registers the supplied Anthropic key as a tenant-owned catalog
   offering and deploys with that durable offering ID.
 - The Hub delivers the deployment and trigger to the browser tab.
@@ -60,11 +72,13 @@ inspect that tab.
   inspector.
 - Workflow events are committed in LightningFS and pushed to the Hub using the
   existing workflow-run pack protocol.
-- Closing the tab removes the execution host.
+- Closing the tab stops the execution host; Hub observes the WebSocket loss and
+  runs its normal allocation release lifecycle after the reconnect grace.
 
 The Bun server builds and serves the browser runtime from TypeScript, publishes
-the workflow definition exported by that same source, and calls ordinary Hub
-APIs to deploy and trigger it. It does not execute the workflow or agent.
+the workflow definition exported by that same source, calls ordinary Hub APIs,
+and brokers provisioner assignments to waiting tabs. It does not execute the
+workflow or agent.
 
 ## Browser runtime source
 

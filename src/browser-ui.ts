@@ -31,10 +31,25 @@ interface DemoDocument {
 }
 
 const BootstrapResponse = type({ deploymentId: "string", tenantId: "string" });
-const BrowserConfigResponse = type({
-  hubWebSocketURL: "string",
-  sidecarId: "string",
-  sidecarToken: "string",
+const BrowserRegistrationResponse = type({ browserId: "string" });
+const BrowserProvisioningEvent = type({ kind: "'heartbeat'" })
+  .or({
+    kind: "'assigned'",
+    allocationId: "string",
+    generation: "number",
+    tenantId: "string",
+    anchorRunId: "string",
+    sidecarId: "string",
+    sidecarToken: "string",
+    hubWebSocketURL: "string",
+  })
+  .or({
+    kind: "'destroyed'",
+    allocationId: "string",
+    generation: "number",
+  });
+const BrowserRequest = type({
+  browserId: "string",
 });
 const TriggerResponse = type({ messageId: "string" });
 const BrowserWorkflowResult = type({
@@ -67,6 +82,7 @@ type BrowserWorkflowModule = {
     sidecarId: string;
     sidecarToken: string;
   }): Promise<void>;
+  disconnect(): Promise<void>;
   subscribeStatus(listener: (status: BrowserHubLinkStatus) => void): () => void;
 };
 
@@ -81,7 +97,6 @@ const timeline = requiredHTMLElement("timeline");
 const userAgent = requiredHTMLElement("user-agent");
 
 let activeMessageId: string | undefined;
-let bootstrapStarted = false;
 let parentEventCount = 0;
 
 userAgent.textContent = navigator.userAgent;
@@ -103,15 +118,15 @@ async function start(): Promise<void> {
   if (!isBrowserWorkflowModule(candidate)) {
     throw new Error("Browser workflow bundle has an invalid public API");
   }
-  const response = await fetch("/api/config");
+  candidate.subscribeStatus(handleStatus);
+  const response = await fetch("/api/browser/register", { method: "POST" });
   const body: unknown = await response.json();
   if (!response.ok) throw responseError(body, response.status);
-  const config = BrowserConfigResponse.assert(body);
-  candidate.subscribeStatus(handleStatus);
-  await candidate.connect({
-    databaseName: "interchange-browser-sidecar-demo",
-    ...config,
-  });
+  const { browserId } = BrowserRegistrationResponse.assert(body);
+  setState(connection, "Waiting for allocation", "pending");
+  appendTimeline("capacity.register", browserId);
+  void consumeProvisioningEvents(candidate, browserId);
+  await bootstrap(browserId);
 }
 
 function handleStatus(status: BrowserHubLinkStatus): void {
@@ -123,10 +138,6 @@ function handleStatus(status: BrowserHubLinkStatus): void {
     case "connected":
       setState(connection, "Connected", "success");
       appendTimeline("sidecar.register", "Browser registered with Hub");
-      if (!bootstrapStarted) {
-        bootstrapStarted = true;
-        void bootstrap();
-      }
       break;
     case "deployed":
       setState(deployment, "Deployed", "success");
@@ -162,17 +173,66 @@ function handleStatus(status: BrowserHubLinkStatus): void {
   }
 }
 
-async function bootstrap(): Promise<void> {
-  setState(deployment, "Creating deployment", "pending");
+async function bootstrap(browserId: string): Promise<void> {
+  setState(deployment, "Requesting exclusive placement", "pending");
   appendTimeline("asset.publish", "Publishing bundled workflow to Hub");
+  appendTimeline("allocation.request", "exclusive / same-deployment");
   try {
-    const response = await fetch("/api/bootstrap", { method: "POST" });
+    const response = await fetch("/api/bootstrap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(BrowserRequest.assert({ browserId })),
+    });
     const body: unknown = await response.json();
     if (!response.ok) throw responseError(body, response.status);
     const deployed = BootstrapResponse.assert(body);
-    appendTimeline("deployment.create", deployed.deploymentId);
+    appendTimeline("deployment.pending", deployed.deploymentId);
   } catch (cause) {
     showError(cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
+async function consumeProvisioningEvents(
+  workflow: BrowserWorkflowModule,
+  browserId: string,
+): Promise<void> {
+  while (true) {
+    try {
+      const response = await fetch(
+        `/api/browser/events?browserId=${encodeURIComponent(browserId)}`,
+      );
+      const body: unknown = await response.json();
+      if (!response.ok) throw responseError(body, response.status);
+      const event = BrowserProvisioningEvent.assert(body);
+      if (event.kind === "heartbeat") continue;
+      if (event.kind === "destroyed") {
+        appendTimeline(
+          "provisioner.destroy",
+          `${event.allocationId} generation ${String(event.generation)}`,
+        );
+        await workflow.disconnect();
+        setState(connection, "Allocation released", "pending");
+        setState(deployment, "Released", "pending");
+        submit.disabled = true;
+        continue;
+      }
+
+      appendTimeline(
+        "provisioner.ensure",
+        `${event.allocationId} generation ${String(event.generation)}`,
+      );
+      appendTimeline("allocation.anchor", event.anchorRunId);
+      appendTimeline("credential.issue", event.sidecarId);
+      await workflow.connect({
+        databaseName: `interchange-browser-sidecar-${event.allocationId}`,
+        hubWebSocketURL: event.hubWebSocketURL,
+        sidecarId: event.sidecarId,
+        sidecarToken: event.sidecarToken,
+      });
+    } catch (cause) {
+      showError(cause instanceof Error ? cause.message : String(cause));
+      return;
+    }
   }
 }
 
@@ -260,6 +320,7 @@ function isBrowserWorkflowModule(
     typeof value === "object" &&
     value !== null &&
     typeof Reflect.get(value, "connect") === "function" &&
+    typeof Reflect.get(value, "disconnect") === "function" &&
     typeof Reflect.get(value, "subscribeStatus") === "function"
   );
 }
