@@ -3,208 +3,134 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Interchange browser sidecar</title>
+    <title>Interchange browser sidecar demo</title>
     <style>
-      :root {
-        color-scheme: dark;
-        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-        background: #0b1020;
-        color: #eef2ff;
-      }
-      * {
-        box-sizing: border-box;
-      }
       body {
-        margin: 0;
-        min-height: 100vh;
-        background: radial-gradient(circle at top left, #1f2d55 0, #0b1020 45%);
+        max-width: 860px;
+        margin: 48px auto;
+        padding: 0 20px;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
       }
-      main {
-        width: min(1080px, calc(100% - 40px));
-        margin: 0 auto;
-        padding: 64px 0;
+      h1,
+      h2 {
+        line-height: 1.2;
       }
-      h1 {
-        max-width: 780px;
-        margin: 0;
-        font-size: clamp(2.5rem, 6vw, 5rem);
-        line-height: 0.96;
-        letter-spacing: -0.05em;
-      }
-      .lede {
-        max-width: 700px;
-        color: #aeb9d6;
-        font-size: 1.1rem;
-      }
-      .grid {
-        display: grid;
-        grid-template-columns: 1.2fr 0.8fr;
-        gap: 20px;
-        margin-top: 36px;
-      }
-      .card {
-        border: 1px solid #2c3858;
-        border-radius: 18px;
-        background: rgba(15, 23, 42, 0.82);
-        padding: 24px;
-        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.22);
-      }
-      .status-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 10px;
-        margin-bottom: 24px;
+      section {
+        margin-top: 32px;
       }
       .status {
-        border-radius: 12px;
-        background: #141d34;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        border: 1px solid #ccc;
+      }
+      .status div {
         padding: 12px;
-        color: #9aa7c7;
+        border-right: 1px solid #ccc;
       }
-      .status strong {
+      .status div:last-child {
+        border-right: 0;
+      }
+      .status span {
         display: block;
-        color: #f8fafc;
-        margin-top: 4px;
-      }
-      [data-state="success"] {
-        color: #6ee7b7 !important;
-      }
-      [data-state="pending"] {
-        color: #fcd34d !important;
-      }
-      [data-state="error"] {
-        color: #fca5a5 !important;
+        font-weight: 600;
       }
       label {
         display: block;
         margin-bottom: 8px;
-        font-weight: 650;
+        font-weight: 600;
       }
       textarea {
+        box-sizing: border-box;
         width: 100%;
-        min-height: 118px;
-        resize: vertical;
-        border: 1px solid #3b4a6d;
-        border-radius: 12px;
-        background: #090f1e;
-        color: inherit;
-        padding: 14px;
+        min-height: 110px;
+        padding: 8px;
         font: inherit;
       }
       button {
-        margin-top: 12px;
-        border: 0;
-        border-radius: 999px;
-        background: #7c9cff;
-        color: #071020;
-        padding: 11px 20px;
+        margin-top: 8px;
+        padding: 6px 12px;
         font: inherit;
-        font-weight: 750;
-        cursor: pointer;
-      }
-      button:disabled {
-        cursor: wait;
-        opacity: 0.45;
       }
       #result {
-        min-height: 110px;
-        margin-top: 22px;
-        border-left: 3px solid #7c9cff;
-        padding: 4px 0 4px 16px;
-        color: #dce5ff;
+        min-height: 80px;
+        padding: 12px;
+        border: 1px solid #ccc;
         white-space: pre-wrap;
       }
-      h2 {
-        margin-top: 0;
-        font-size: 1rem;
-        color: #aeb9d6;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-      }
-      ol {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-      }
-      li {
-        display: grid;
-        grid-template-columns: 90px 1fr;
-        gap: 10px;
-        border-top: 1px solid #263250;
-        padding: 12px 0;
-        font-size: 0.9rem;
-      }
-      li:first-child {
-        border-top: 0;
-      }
-      .timeline-label {
-        color: #7c9cff;
+      #user-agent {
+        overflow-wrap: anywhere;
         font-family: ui-monospace, monospace;
       }
-      .proof {
-        margin-top: 20px;
-        color: #93a1c4;
-        font-size: 0.86rem;
-        overflow-wrap: anywhere;
+      #timeline {
+        padding-left: 24px;
       }
-      .proof strong {
-        color: #dce5ff;
+      #timeline li {
+        margin: 8px 0;
       }
-      @media (max-width: 780px) {
-        .grid {
+      .timeline-label {
+        display: inline-block;
+        min-width: 7rem;
+        font-family: ui-monospace, monospace;
+      }
+      @media (max-width: 600px) {
+        .status {
           grid-template-columns: 1fr;
         }
-        .status-grid {
-          grid-template-columns: 1fr;
+        .status div,
+        .status div:last-child {
+          border-right: 0;
+          border-bottom: 1px solid #ccc;
+        }
+        .status div:last-child {
+          border-bottom: 0;
         }
       }
     </style>
   </head>
   <body>
     <main>
-      <h1>The agent is running in this browser.</h1>
-      <p class="lede">
-        The Hub delivers the trigger, but this tab owns the workflow runtime,
-        agent loop, browser tool, direct inference request, and LightningFS
-        working repository.
+      <h1>Interchange browser sidecar demo</h1>
+      <p>
+        The Hub delivers deployments and triggers. This tab runs the workflow,
+        agent loop, browser tool, inference request, and LightningFS working
+        repository.
       </p>
-      <div class="grid">
-        <section class="card">
-          <div class="status-grid">
-            <div class="status">
-              Hub<strong id="connection" data-state="pending">Loading</strong>
-            </div>
-            <div class="status">
-              Workflow<strong id="deployment" data-state="pending"
-                >Waiting</strong
-              >
-            </div>
-            <div class="status">
-              Browser runtime<strong id="execution" data-state="pending"
-                >Starting</strong
-              >
-            </div>
-          </div>
-          <form id="prompt-form">
-            <label for="prompt"
-              >Ask the browser agent to fact-check a claim</label
-            >
-            <textarea id="prompt">
+
+      <section aria-label="Status" class="status">
+        <div>Hub <span id="connection" data-state="pending">Loading</span></div>
+        <div>
+          Workflow <span id="deployment" data-state="pending">Waiting</span>
+        </div>
+        <div>
+          Browser runtime
+          <span id="execution" data-state="pending">Starting</span>
+        </div>
+      </section>
+
+      <section>
+        <h2>Run workflow</h2>
+        <form id="prompt-form">
+          <label for="prompt">Claim to fact-check</label>
+          <textarea id="prompt">
 Fact check this claim: Sydney is the capital of Australia. Keep the answer concise.</textarea
-            >
-            <button id="submit" type="submit" disabled>Run in browser</button>
-          </form>
-          <div id="result">Waiting for the browser sidecar to deploy…</div>
-          <p class="proof">
-            <strong>Browser-only tool evidence:</strong>
-            <span id="user-agent"></span>
-          </p>
-        </section>
-        <aside class="card">
-          <h2>Execution timeline</h2>
-          <ol id="timeline"></ol>
-        </aside>
-      </div>
+          >
+          <button id="submit" type="submit" disabled>Run in browser</button>
+        </form>
+
+        <h2>Result</h2>
+        <div id="result">Waiting for the browser sidecar to deploy…</div>
+        <p>
+          <strong>Browser tool:</strong>
+          <span id="user-agent"></span>
+        </p>
+      </section>
+
+      <section>
+        <h2>Execution log</h2>
+        <ol id="timeline"></ol>
+      </section>
     </main>
     <script type="module" src="/browser-ui.js"></script>
   </body>
