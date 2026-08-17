@@ -71,13 +71,14 @@ so do not attach the debugger to a page containing data you cannot share.
 
 The console installer is intentionally a prototype. Strict Content Security
 Policy and HTTPS mixed-content rules can block the module, Hub WebSocket, or
-model request. A browser extension is the practical next step for reliably
-attaching to arbitrary pages.
+model request. 
 
 ## What the demo proves
 
 - A one-time, five-minute pairing code lets a target tab register without
   putting long-lived Hub credentials in the pasted command.
+- Each installed tab receives its own workflow deployment and keeps its own
+  long-lived parent run; repeated `run()` calls create children within it.
 - The attached tab registers directly on the Hub's ordinary sidecar WebSocket.
 - The workflow requests exclusive, same-deployment sidecar placement.
 - Hub calls the linked `SidecarProvisioner` exported by this repository; it

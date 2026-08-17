@@ -27,6 +27,69 @@ describe("browser provisioning broker", () => {
     });
   });
 
+  test("gives separately activated browsers separate allocations", async () => {
+    const broker = createBrowserProvisioningBroker();
+    const firstBrowserId = pairBrowser(broker);
+    const secondBrowserId = pairBrowser(broker);
+    broker.activateBrowser(firstBrowserId);
+    expect(broker.ensure(ensureRequest())).toEqual({
+      kind: "accepted",
+      externalRef: firstBrowserId,
+    });
+
+    broker.activateBrowser(secondBrowserId);
+    expect(
+      broker.ensure({
+        ...ensureRequest(),
+        allocationId: "allocation-2",
+        anchorRunId: "run-2",
+        sidecarId: "sidecar-2",
+        token: "secret-2",
+      }),
+    ).toEqual({ kind: "accepted", externalRef: secondBrowserId });
+
+    await expect(
+      broker.waitForBrowserDeployment(firstBrowserId, "run-1"),
+    ).resolves.toBeUndefined();
+    await expect(
+      broker.waitForBrowserDeployment(secondBrowserId, "run-2"),
+    ).resolves.toBeUndefined();
+  });
+
+  test("waits for the requested deployment allocation", async () => {
+    const broker = createBrowserProvisioningBroker();
+    const browserId = pairBrowser(broker);
+    broker.activateBrowser(browserId);
+    const assigned = broker.waitForBrowserDeployment(browserId, "run-1");
+
+    broker.ensure(ensureRequest());
+
+    await expect(assigned).resolves.toBeUndefined();
+  });
+
+  test("does not offer a released browser to another deployment", () => {
+    const broker = createBrowserProvisioningBroker();
+    const firstBrowserId = pairBrowser(broker);
+    const secondBrowserId = pairBrowser(broker);
+    const first = ensureRequest();
+    broker.activateBrowser(firstBrowserId);
+    broker.ensure(first);
+    broker.destroy({
+      allocationId: first.allocationId,
+      generation: first.generation,
+      sidecarId: first.sidecarId,
+    });
+
+    broker.activateBrowser(secondBrowserId);
+    expect(
+      broker.ensure({
+        ...first,
+        allocationId: "allocation-2",
+        anchorRunId: "run-2",
+      }),
+    ).toEqual({ kind: "accepted", externalRef: secondBrowserId });
+  });
+
   test("makes ensure and destroy idempotent for one generation", async () => {
     const broker = createBrowserProvisioningBroker();
     const browserId = pairBrowser(broker);
@@ -104,6 +167,9 @@ describe("browser provisioning broker", () => {
     broker.unregisterBrowser(browserId);
 
     await expect(event).resolves.toBeNull();
+    expect(() => broker.assertBrowserCanTrigger(browserId)).toThrow(
+      `Unknown browser registration ${browserId}`,
+    );
   });
 });
 

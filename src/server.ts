@@ -63,9 +63,10 @@ const hub = createDemoHubClient({
     tenantSlug: Bun.env.BROWSER_TENANT_SLUG,
   }),
 });
-let deployment: Awaited<ReturnType<typeof hub.bootstrap>> | undefined;
-let bootstrapPromise:
-  Promise<Awaited<ReturnType<typeof hub.bootstrap>>> | undefined;
+type Deployment = Awaited<ReturnType<typeof hub.bootstrap>>;
+
+const deployments = new Map<string, Promise<Deployment>>();
+let deploymentQueue = Promise.resolve();
 
 const server = Bun.serve({
   hostname: HOST,
@@ -119,8 +120,9 @@ const server = Bun.serve({
       }
       if (request.method === "POST" && url.pathname === "/api/bootstrap") {
         const { browserId } = BrowserRequest.assert(await request.json());
-        provisioning.activateBrowser(browserId);
-        return withBrowserAccess(Response.json(await bootstrap()));
+        return withBrowserAccess(
+          Response.json(await bootstrapBrowser(browserId)),
+        );
       }
       if (request.method === "GET" && url.pathname === "/api/browser/events") {
         const browserId = url.searchParams.get("browserId");
@@ -138,6 +140,7 @@ const server = Bun.serve({
       ) {
         const { browserId } = BrowserRequest.assert(await request.json());
         provisioning.unregisterBrowser(browserId);
+        deployments.delete(browserId);
         return withBrowserAccess(new Response(null, { status: 204 }));
       }
       if (
@@ -170,7 +173,11 @@ const server = Bun.serve({
             Response.json({ error: "Prompt cannot be empty" }, { status: 400 }),
           );
         }
-        const active = deployment ?? (await bootstrap());
+        const activeDeployment = deployments.get(body.browserId);
+        if (activeDeployment === undefined) {
+          throw new Error(`Browser ${body.browserId} has no deployment`);
+        }
+        const active = await activeDeployment;
         return withBrowserAccess(
           Response.json(await hub.trigger(active.deploymentId, prompt)),
         );
@@ -192,16 +199,38 @@ process.stdout.write(
   `Browser sidecar demo available at http://${server.hostname}:${String(server.port)}\n`,
 );
 
-async function bootstrap() {
-  if (deployment !== undefined) return deployment;
-  bootstrapPromise ??= hub.bootstrap(inferenceSource());
-  try {
-    deployment = await bootstrapPromise;
-    return deployment;
-  } catch (cause) {
-    bootstrapPromise = undefined;
-    throw cause;
-  }
+function bootstrapBrowser(browserId: string): Promise<Deployment> {
+  const existing = deployments.get(browserId);
+  if (existing !== undefined) return existing;
+
+  const created = enqueueDeployment(browserId);
+  deployments.set(browserId, created);
+  void created.catch(() => {
+    if (deployments.get(browserId) === created) deployments.delete(browserId);
+  });
+  return created;
+}
+
+function enqueueDeployment(browserId: string): Promise<Deployment> {
+  const created = deploymentQueue.then(async () => {
+    provisioning.activateBrowser(browserId);
+    try {
+      const deployment = await hub.bootstrap(inferenceSource());
+      await provisioning.waitForBrowserDeployment(
+        browserId,
+        deployment.deploymentId,
+      );
+      return deployment;
+    } catch (cause) {
+      provisioning.deactivateBrowser(browserId);
+      throw cause;
+    }
+  });
+  deploymentQueue = created.then(
+    () => undefined,
+    () => undefined,
+  );
+  return created;
 }
 
 function inferenceSource(): InferenceSource {

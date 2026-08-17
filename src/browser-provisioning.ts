@@ -51,6 +51,12 @@ export type EnsureBrowserSidecarResult =
 type BrowserSlot = {
   id: string;
   available: boolean;
+  deploymentWaiters: Array<{
+    anchorRunId: string;
+    reject(cause: unknown): void;
+    resolve(): void;
+    timer: ReturnType<typeof setTimeout>;
+  }>;
   events: BrowserProvisioningEvent[];
   waiters: Array<{
     resolve(event: BrowserProvisioningEvent | null): void;
@@ -92,6 +98,7 @@ export function createBrowserProvisioningBroker() {
     browsers.set(browserId, {
       id: browserId,
       available: false,
+      deploymentWaiters: [],
       events: [],
       waiters: [],
     });
@@ -100,28 +107,63 @@ export function createBrowserProvisioningBroker() {
 
   function activateBrowser(browserId: string): void {
     const browser = requireBrowser(browserId);
-    const active = [...assignments.values()].find(
-      (assignment) => !assignment.destroyed,
-    );
-    if (active !== undefined) {
-      const previousBrowser = browsers.get(active.browserId);
-      if (previousBrowser !== undefined) previousBrowser.available = false;
-      active.browserId = browserId;
-      browser.available = false;
-      publish(browser, active.event);
-      return;
-    }
     browser.available = true;
   }
 
+  function deactivateBrowser(browserId: string): void {
+    const browser = browsers.get(browserId);
+    if (browser !== undefined) browser.available = false;
+  }
+
+  function waitForBrowserDeployment(
+    browserId: string,
+    anchorRunId: string,
+    timeoutMs = 25_000,
+  ): Promise<void> {
+    const browser = requireBrowser(browserId);
+    const assignment = findActiveAssignment(browserId);
+    if (assignment !== undefined) {
+      return assignment.event.anchorRunId === anchorRunId
+        ? Promise.resolve()
+        : Promise.reject(
+            deploymentMismatch(
+              browserId,
+              assignment.event.anchorRunId,
+              anchorRunId,
+            ),
+          );
+    }
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        anchorRunId,
+        reject,
+        resolve,
+        timer: setTimeout(() => {
+          const index = browser.deploymentWaiters.indexOf(waiter);
+          if (index === -1) return;
+          browser.deploymentWaiters.splice(index, 1);
+          reject(
+            new Error(
+              `Browser ${browserId} did not receive deployment ${anchorRunId}`,
+            ),
+          );
+        }, timeoutMs),
+      };
+      browser.deploymentWaiters.push(waiter);
+    });
+  }
+
   function assertBrowserCanTrigger(browserId: string): void {
+    requireActiveAssignment(browserId);
+  }
+
+  function requireActiveAssignment(browserId: string): Assignment {
     requireBrowser(browserId);
-    const assignment = [...assignments.values()].find(
-      (candidate) => candidate.browserId === browserId && !candidate.destroyed,
-    );
+    const assignment = findActiveAssignment(browserId);
     if (assignment === undefined) {
       throw new Error(`Browser ${browserId} has no active deployment`);
     }
+    return assignment;
   }
 
   function unregisterBrowser(browserId: string): void {
@@ -133,6 +175,11 @@ export function createBrowserProvisioningBroker() {
       waiter.resolve(null);
     }
     browser.waiters.length = 0;
+    for (const waiter of browser.deploymentWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error(`Browser ${browserId} unregistered`));
+    }
+    browser.deploymentWaiters.length = 0;
     browsers.delete(browserId);
   }
 
@@ -161,6 +208,7 @@ export function createBrowserProvisioningBroker() {
     request: EnsureBrowserSidecarRequest,
   ): EnsureBrowserSidecarResult {
     const existing = assignments.get(request.allocationId);
+    let browser: BrowserSlot | undefined;
     if (existing !== undefined) {
       if (request.generation < existing.event.generation) {
         return staleGeneration(request, existing.event.generation);
@@ -173,11 +221,10 @@ export function createBrowserProvisioningBroker() {
       if (!existing.destroyed) {
         destroyAssignment(existing);
       }
+      browser = browsers.get(existing.browserId);
     }
 
-    const browser = [...browsers.values()].find(
-      (candidate) => candidate.available,
-    );
+    browser ??= [...browsers.values()].find((candidate) => candidate.available);
     if (browser === undefined) {
       return {
         kind: "rejected",
@@ -203,6 +250,7 @@ export function createBrowserProvisioningBroker() {
       event,
       destroyed: false,
     });
+    settleDeploymentWaiters(browser, event);
     publish(browser, event);
     return { kind: "accepted", externalRef: browser.id };
   }
@@ -228,7 +276,6 @@ export function createBrowserProvisioningBroker() {
       allocationId: assignment.event.allocationId,
       generation: assignment.event.generation,
     });
-    browser.available = true;
   }
 
   function publish(browser: BrowserSlot, event: BrowserProvisioningEvent) {
@@ -249,16 +296,54 @@ export function createBrowserProvisioningBroker() {
     return browser;
   }
 
+  function findActiveAssignment(browserId: string): Assignment | undefined {
+    return [...assignments.values()].find(
+      (candidate) => candidate.browserId === browserId && !candidate.destroyed,
+    );
+  }
+
+  function settleDeploymentWaiters(
+    browser: BrowserSlot,
+    event: BrowserAssignment,
+  ): void {
+    for (const waiter of browser.deploymentWaiters.splice(0)) {
+      clearTimeout(waiter.timer);
+      if (waiter.anchorRunId === event.anchorRunId) {
+        waiter.resolve();
+      } else {
+        waiter.reject(
+          deploymentMismatch(
+            browser.id,
+            event.anchorRunId,
+            waiter.anchorRunId,
+          ),
+        );
+      }
+    }
+  }
+
   return {
     activateBrowser,
     assertBrowserCanTrigger,
     createPairing,
+    deactivateBrowser,
     destroy,
     ensure,
     nextEvent,
     registerBrowser,
     unregisterBrowser,
+    waitForBrowserDeployment,
   };
+}
+
+function deploymentMismatch(
+  browserId: string,
+  actualAnchorRunId: string,
+  expectedAnchorRunId: string,
+): Error {
+  return new Error(
+    `Browser ${browserId} received deployment ${actualAnchorRunId}, expected ${expectedAnchorRunId}`,
+  );
 }
 
 function staleGeneration(
