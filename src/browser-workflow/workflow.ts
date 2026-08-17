@@ -178,6 +178,7 @@ type BrowserDeploymentRuntime = {
   parentRun: WorkflowRun | undefined;
   parentRunId: string;
   repoStore: RepoStore;
+  restoreWorkflowRepo: BrowserWorkflowRepo["restore"];
   scheduler: ReturnType<typeof createInMemoryScheduler>;
   signalChannel: SignalChannel;
   spawnSuspendableChild: SpawnSuspendableChild;
@@ -223,10 +224,20 @@ export function connect(options: ConnectBrowserWorkflowOptions): Promise<void> {
           `workflow-run repo ${args.repoId.id} does not match ${args.agentAddress}`,
         );
       }
-      await restoreBrowserWorkflowRepo({
-        storage,
-        ...args,
-      });
+      const runtime = activeRuntime;
+      if (runtime?.agentAddress === args.agentAddress) {
+        await runtime.restoreWorkflowRepo({
+          commitSha: args.commitSha,
+          pack: args.pack,
+          ref: args.ref,
+          transferId: args.transferId,
+        });
+      } else {
+        // On reconnect the Hub may restore the authoritative run repo before
+        // re-sending agent.deploy. Runtime construction below adopts this ref
+        // and hydrates its in-memory event view from the checked-out tree.
+        await restoreBrowserWorkflowRepo({ storage, ...args });
+      }
     },
     onStatus: (status) => {
       for (const listener of statusListeners) listener(status);
@@ -411,13 +422,20 @@ async function triggerWorkflow(
   );
 
   try {
-    if (runtime.parentRun === undefined) {
+    if (runtime.parentRun === undefined && parentLog.length === 0) {
       runtime.parentRun = runtimeRun(workflow, createParentEnv(runtime), {
         runId: runtime.parentRunId,
         triggerPayload: input,
         consumedMessageId: messageId,
       });
     } else {
+      if (runtime.parentRun === undefined) {
+        // The restored RepoStore is already canonical, so a seedless recovery
+        // adopts it and re-arms the durable on-trigger input park.
+        runtime.parentRun = runtimeRun(workflow, createParentEnv(runtime), {
+          runId: runtime.parentRunId,
+        });
+      }
       const signalName = findInputSignal(parentLog);
       await runtime.parentRun.signal(signalName, input, messageId);
     }
@@ -524,6 +542,7 @@ async function createRuntime(args: {
     parentRun: undefined,
     parentRunId: args.anchorRunId,
     repoStore,
+    restoreWorkflowRepo: workflowRepo.restore,
     scheduler,
     signalChannel,
     spawnSuspendableChild: async () => {
