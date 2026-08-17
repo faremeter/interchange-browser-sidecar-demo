@@ -11,10 +11,7 @@ import { parseMailToEmail } from "@intx/mime";
 import { createBrowserIsogitStorage } from "@intx/storage-isogit/browser";
 import { base64Decode, deriveWorkflowRunId } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
-import type {
-  AgentDeployFrame,
-  MailInboundFrame,
-} from "@intx/types/sidecar";
+import type { AgentDeployFrame, MailInboundFrame } from "@intx/types/sidecar";
 import type {
   ConversationTurn,
   InferenceSource,
@@ -50,6 +47,7 @@ import {
   type BrowserHubLinkStatus,
 } from "./hub-link";
 import { createBrowserWorkflowAuthorize } from "./authorize";
+import type { BrowserClaimCheck } from "./claim-check";
 import { createBrowserWorkflowRepo } from "./workflow-repo";
 import { restoreBrowserWorkflowRepo } from "./workflow-repo";
 
@@ -164,6 +162,7 @@ export type BrowserWorkflowResult = {
 type BrowserDeploymentRuntime = {
   agentAddress: string;
   blobs: ReturnType<typeof createInMemoryBlobSubstrate>;
+  claimCheck: BrowserClaimCheck;
   childResults: Map<string, Promise<RunResult>>;
   childTurns: Map<string, ConversationTurn[]>;
   deploymentId: string;
@@ -321,15 +320,25 @@ function resolveBodySource(frame: AgentDeployFrame): InferenceSource {
 
 async function handleMailInbound(
   frame: MailInboundFrame,
-): Promise<{ completion: Promise<BrowserWorkflowResult> }> {
+  messageId: string,
+): Promise<{ completion: Promise<BrowserWorkflowResult> | null }> {
   const runtime = activeRuntime;
   if (runtime === undefined || runtime.agentAddress !== frame.agentAddress) {
     throw new Error(
       `no browser deployment is registered for ${frame.agentAddress}`,
     );
   }
-  const raw = base64Decode(frame.rawMessage);
-  const parsed = parseMailToEmail(raw, frame.messageId ?? crypto.randomUUID());
+  const outcome = await runtime.claimCheck.enqueue({
+    address: frame.agentAddress,
+    messageId,
+    rawMessage: frame.rawMessage,
+  });
+  if (outcome === "already-present") return { completion: null };
+  return { completion: queueTrigger(runtime, messageId) };
+}
+
+function parseTriggerInput(rawMessage: string, messageId: string): string {
+  const parsed = parseMailToEmail(base64Decode(rawMessage), messageId);
   const textPart = parsed.textBody[0];
   const text =
     (textPart === undefined
@@ -338,11 +347,33 @@ async function handleMailInbound(
   if (text === null || text === undefined || text.trim() === "") {
     throw new Error("workflow trigger mail has no text content");
   }
-  return { completion: queueTrigger(text) };
+  return text;
 }
 
-function queueTrigger(input: string): Promise<BrowserWorkflowResult> {
-  const result = triggerQueue.then(() => triggerWorkflow(input));
+function queueTrigger(
+  runtime: BrowserDeploymentRuntime,
+  messageId: string,
+): Promise<BrowserWorkflowResult> {
+  const result = triggerQueue.then(async () => {
+    const envelope = await runtime.claimCheck.dequeue(
+      runtime.agentAddress,
+      messageId,
+    );
+    if (envelope === null) {
+      throw new Error(`browser claim-check lost queued mail ${messageId}`);
+    }
+    const completed = await triggerWorkflow(
+      runtime,
+      parseTriggerInput(envelope.rawMessage, messageId),
+      messageId,
+    );
+    await runtime.claimCheck.markConsumed({
+      address: runtime.agentAddress,
+      messageId,
+      runId: runtime.parentRunId,
+    });
+    return completed;
+  });
   triggerQueue = result.then(
     () => undefined,
     () => undefined,
@@ -350,9 +381,12 @@ function queueTrigger(input: string): Promise<BrowserWorkflowResult> {
   return result;
 }
 
-async function triggerWorkflow(input: string): Promise<BrowserWorkflowResult> {
-  const runtime = activeRuntime;
-  if (runtime === undefined) {
+async function triggerWorkflow(
+  runtime: BrowserDeploymentRuntime,
+  input: string,
+  messageId: string,
+): Promise<BrowserWorkflowResult> {
+  if (activeRuntime !== runtime) {
     throw new Error("browser sidecar received a trigger before deployment");
   }
   const parentLog = await runtime.repoStore.read(runtime.parentRunId);
@@ -373,14 +407,11 @@ async function triggerWorkflow(input: string): Promise<BrowserWorkflowResult> {
       runtime.parentRun = runtimeRun(workflow, createParentEnv(runtime), {
         runId: runtime.parentRunId,
         triggerPayload: input,
+        consumedMessageId: messageId,
       });
     } else {
       const signalName = findInputSignal(parentLog);
-      await runtime.parentRun.signal(
-        signalName,
-        input,
-        runtime.newId("trigger"),
-      );
+      await runtime.parentRun.signal(signalName, input, messageId);
     }
 
     await Promise.race([
@@ -475,6 +506,7 @@ async function createRuntime(args: {
   const runtime: BrowserDeploymentRuntime = {
     agentAddress: args.agentAddress,
     blobs,
+    claimCheck: workflowRepo.claimCheck,
     childResults,
     childTurns,
     deploymentId: args.deploymentId,

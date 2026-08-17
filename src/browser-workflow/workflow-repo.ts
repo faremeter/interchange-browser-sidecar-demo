@@ -8,6 +8,13 @@ import {
   type WorkflowEvent,
 } from "@intx/workflow";
 
+import {
+  createBrowserClaimCheck,
+  type BrowserClaimCheck,
+  type BrowserClaimCheckMutation,
+  type BrowserClaimCheckReads,
+} from "./claim-check";
+
 const EVENTS_REF = "refs/heads/main";
 
 export type CreateBrowserWorkflowRepoOpts = {
@@ -22,6 +29,7 @@ export type CreateBrowserWorkflowRepoOpts = {
 };
 
 export type BrowserWorkflowRepo = {
+  claimCheck: BrowserClaimCheck;
   repoStore: RepoStore;
 };
 
@@ -89,6 +97,105 @@ export async function createBrowserWorkflowRepo(
   let commitQueue = Promise.resolve();
   let lastPushedCommitSha: string | undefined;
 
+  async function mutate<T>(
+    message: string,
+    compute: (
+      reads: BrowserClaimCheckReads,
+    ) => Promise<BrowserClaimCheckMutation<T>>,
+  ): Promise<T> {
+    const task = commitQueue.then(async () => {
+      const mutation = await compute({
+        async list(directory) {
+          try {
+            return await storage.fs.promises.readdir(`${repoDir}/${directory}`);
+          } catch (cause) {
+            if (isMissing(cause)) return [];
+            throw cause;
+          }
+        },
+        async read(filepath) {
+          try {
+            return await storage.fs.promises.readFile(
+              `${repoDir}/${filepath}`,
+              "utf8",
+            );
+          } catch (cause) {
+            if (isMissing(cause)) return null;
+            throw cause;
+          }
+        },
+      });
+      if (
+        mutation.deletes.length === 0 &&
+        Object.keys(mutation.puts).length === 0
+      ) {
+        return mutation.value;
+      }
+
+      for (const filepath of mutation.deletes) {
+        await git.remove({ fs: storage.runtime.fs, dir: repoDir, filepath });
+      }
+      for (const [filepath, value] of Object.entries(mutation.puts)) {
+        const absolute = `${repoDir}/${filepath}`;
+        await runtime.fs.mkdir(absolute.slice(0, absolute.lastIndexOf("/")), {
+          recursive: true,
+        });
+        await storage.fs.promises.writeFile(absolute, value);
+        await git.add({ fs: storage.runtime.fs, dir: repoDir, filepath });
+      }
+      await commitAndPush(message);
+      return mutation.value;
+    });
+    commitQueue = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    return task;
+  }
+
+  async function commitAndPush(message: string): Promise<void> {
+    const branch = await git.currentBranch({
+      fs: storage.runtime.fs,
+      dir: repoDir,
+      fullname: true,
+    });
+    const commitSha = await git.commit({
+      fs: storage.runtime.fs,
+      dir: repoDir,
+      noUpdateBranch: true,
+      author: {
+        name: "interchange-browser-sidecar",
+        email: "browser-sidecar@interchange.local",
+      },
+      message,
+    });
+    await storage.runtime.flush?.();
+    await git.writeRef({
+      fs: storage.runtime.fs,
+      dir: repoDir,
+      ref: branch ?? "HEAD",
+      value: commitSha,
+      force: true,
+    });
+    await storage.runtime.flush?.();
+
+    const built = await storage.createNegotiatedPack(
+      repoDir,
+      [commitSha],
+      lastPushedCommitSha === undefined ? [] : [lastPushedCommitSha],
+    );
+    if (built === null) {
+      throw new Error(`workflow-run pack for ${commitSha} was empty`);
+    }
+    await opts.pushPack({
+      repoId: opts.repoId,
+      pack: built.pack,
+      ref: EVENTS_REF,
+      commitSha,
+    });
+    lastPushedCommitSha = commitSha;
+  }
+
   async function commitEvents(
     runId: string,
     events: readonly WorkflowEvent[],
@@ -109,52 +216,14 @@ export async function createBrowserWorkflowRepo(
         await git.add({ fs: storage.runtime.fs, dir: repoDir, filepath });
       }
 
-      const branch = await git.currentBranch({
-        fs: storage.runtime.fs,
-        dir: repoDir,
-        fullname: true,
-      });
       const first = events[0];
       const last = events[events.length - 1];
       if (first === undefined || last === undefined) return;
-      const commitSha = await git.commit({
-        fs: storage.runtime.fs,
-        dir: repoDir,
-        noUpdateBranch: true,
-        author: {
-          name: "interchange-browser-sidecar",
-          email: "browser-sidecar@interchange.local",
-        },
-        message:
-          events.length === 1
-            ? `append workflow event ${first.kind} for run ${runId}`
-            : `append ${String(events.length)} workflow events ${first.kind}..${last.kind} for run ${runId}`,
-      });
-      await storage.runtime.flush?.();
-      await git.writeRef({
-        fs: storage.runtime.fs,
-        dir: repoDir,
-        ref: branch ?? "HEAD",
-        value: commitSha,
-        force: true,
-      });
-      await storage.runtime.flush?.();
-
-      const built = await storage.createNegotiatedPack(
-        repoDir,
-        [commitSha],
-        lastPushedCommitSha === undefined ? [] : [lastPushedCommitSha],
+      await commitAndPush(
+        events.length === 1
+          ? `append workflow event ${first.kind} for run ${runId}`
+          : `append ${String(events.length)} workflow events ${first.kind}..${last.kind} for run ${runId}`,
       );
-      if (built === null) {
-        throw new Error(`workflow-run pack for ${commitSha} was empty`);
-      }
-      await opts.pushPack({
-        repoId: opts.repoId,
-        pack: built.pack,
-        ref: EVENTS_REF,
-        commitSha,
-      });
-      lastPushedCommitSha = commitSha;
       await memory.appendBatch(runId, events);
     });
     commitQueue = task.then(
@@ -165,6 +234,7 @@ export async function createBrowserWorkflowRepo(
   }
 
   return {
+    claimCheck: createBrowserClaimCheck({ mutate }),
     repoStore: {
       read: memory.read.bind(memory),
       append(runId, event) {
@@ -174,4 +244,12 @@ export async function createBrowserWorkflowRepo(
       subscribe: memory.subscribe.bind(memory),
     },
   };
+}
+
+function isMissing(cause: unknown): boolean {
+  return (
+    cause instanceof Error &&
+    "code" in cause &&
+    Reflect.get(cause, "code") === "ENOENT"
+  );
 }

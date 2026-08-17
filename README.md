@@ -72,8 +72,10 @@ inspect that tab.
 - The agent calls `browser_info`, which reads `navigator.userAgent` in the tab.
 - The Anthropic request originates from the browser and appears in its network
   inspector.
-- Workflow events are committed in LightningFS and pushed to the Hub using the
-  existing workflow-run pack protocol.
+- Inbound triggers are durably claimed in LightningFS before the browser
+  acknowledges them, then moved through the normal inbox, processing, and
+  consumed states. Workflow events and claim-check evidence are pushed to the
+  Hub using the existing workflow-run pack protocol.
 - Closing the tab stops the execution host; Hub observes the WebSocket loss and
   runs its normal allocation release lifecycle after the reconnect grace.
 

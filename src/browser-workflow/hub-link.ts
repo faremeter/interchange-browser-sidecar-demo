@@ -48,7 +48,8 @@ export type CreateBrowserHubLinkOpts = {
   onDeploy(frame: AgentDeployFrame): Promise<KeyPair>;
   onMailInbound(
     frame: MailInboundFrame,
-  ): Promise<{ completion: Promise<unknown> }>;
+    messageId: string,
+  ): Promise<{ completion: Promise<unknown> | null }>;
   onRunGrants(frame: RunGrantsFrame): Promise<void>;
   onWorkflowRunPack(args: {
     agentAddress: string;
@@ -123,12 +124,7 @@ export function createBrowserHubLink(
 
   async function handleMail(frame: MailInboundFrame): Promise<void> {
     const messageId = frame.messageId ?? crypto.randomUUID();
-    opts.onStatus({
-      kind: "running",
-      agentAddress: frame.agentAddress,
-      messageId,
-    });
-    const accepted = await opts.onMailInbound(frame);
+    const accepted = await opts.onMailInbound(frame, messageId);
     if (frame.messageId !== undefined) {
       send({
         type: "mail.inbound.ack",
@@ -136,6 +132,12 @@ export function createBrowserHubLink(
         messageId: frame.messageId,
       });
     }
+    if (accepted.completion === null) return;
+    opts.onStatus({
+      kind: "running",
+      agentAddress: frame.agentAddress,
+      messageId,
+    });
     void accepted.completion.then(
       (result) => {
         opts.onStatus({
@@ -283,6 +285,22 @@ export function createBrowserHubLink(
     }
   }
 
+  function handleMessageFailure(cause: unknown): void {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    opts.onStatus({ kind: "error", message });
+  }
+
+  function isPackResponse(data: string): boolean {
+    try {
+      const raw: unknown = JSON.parse(data);
+      if (typeof raw !== "object" || raw === null) return false;
+      const frameType = Reflect.get(raw, "type");
+      return frameType === "repo.pack.ack" || frameType === "repo.pack.reject";
+    } catch {
+      return false;
+    }
+  }
+
   async function pushWorkflowRunPack(args: {
     agentAddress: string;
     repoId: RepoId;
@@ -336,13 +354,13 @@ export function createBrowserHubLink(
       });
       connection.addEventListener("message", (event) => {
         if (typeof event.data !== "string") return;
+        if (isPackResponse(event.data)) {
+          void handleMessage(event.data).catch(handleMessageFailure);
+          return;
+        }
         messageQueue = messageQueue
           .then(() => handleMessage(event.data))
-          .catch((cause: unknown) => {
-            const message =
-              cause instanceof Error ? cause.message : String(cause);
-            opts.onStatus({ kind: "error", message });
-          });
+          .catch(handleMessageFailure);
       });
       connection.addEventListener("error", () => {
         if (connection.readyState !== WebSocket.OPEN) {
