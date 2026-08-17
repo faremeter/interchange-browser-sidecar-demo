@@ -220,14 +220,17 @@ async function createDebugSidecar(
       const body: unknown = await response.json();
       if (!response.ok) throw responseError(body, response.status);
       const { messageId } = TriggerResponse.assert(body);
+      let result: unknown;
       if (completedRuns.has(messageId)) {
-        const result = completedRuns.get(messageId);
+        result = completedRuns.get(messageId);
         completedRuns.delete(messageId);
-        return result;
+      } else {
+        result = await new Promise<unknown>((resolve, reject) => {
+          pendingRuns.set(messageId, { resolve, reject });
+        });
       }
-      return new Promise<unknown>((resolve, reject) => {
-        pendingRuns.set(messageId, { resolve, reject });
-      });
+      logRunResult(result);
+      return result;
     },
     subscribeStatus(listener: (status: DebugSidecarStatus) => void) {
       listeners.add(listener);
@@ -321,4 +324,16 @@ function responseError(body: unknown, status: number): Error {
     if (typeof message === "string") return new Error(message);
   }
   return new Error(`Debug sidecar request failed with ${String(status)}`);
+}
+
+function logRunResult(result: unknown): void {
+  console.log("Interchange debug response:", readableResponse(result));
+}
+
+function readableResponse(result: unknown): unknown {
+  if (typeof result !== "object" || result === null) return result;
+  const output = Reflect.get(result, "output");
+  if (typeof output !== "object" || output === null) return output;
+  const reply = Reflect.get(output, "reply");
+  return typeof reply === "string" ? reply : output;
 }
