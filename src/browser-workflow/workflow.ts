@@ -9,7 +9,7 @@ import {
 import { generateKeyPair } from "@intx/crypto";
 import { parseMailToEmail } from "@intx/mime";
 import { createBrowserIsogitStorage } from "@intx/storage-isogit/browser";
-import { base64Decode } from "@intx/types";
+import { base64Decode, deriveWorkflowRunId } from "@intx/types";
 import type {
   AgentDeployFrame,
   MailInboundFrame,
@@ -140,6 +140,7 @@ export const manifest = Object.freeze({
 });
 
 export type ConnectBrowserWorkflowOptions = {
+  anchorRunId: string;
   databaseName: string;
   hubWebSocketURL: string;
   sidecarId: string;
@@ -197,7 +198,7 @@ export function connect(options: ConnectBrowserWorkflowOptions): Promise<void> {
     sidecarId: options.sidecarId,
     token: options.sidecarToken,
     getKeyPair: async (address) => deploymentKeys.get(address) ?? null,
-    onDeploy: (frame) => deploy(frame, storage, link),
+    onDeploy: (frame) => deploy(frame, storage, link, options.anchorRunId),
     onMailInbound: handleMailInbound,
     onRunGrants: async (frame) => {
       runGrants.set(frame.runId, frame.stepGrants);
@@ -245,6 +246,7 @@ async function deploy(
   frame: AgentDeployFrame,
   storage: ReturnType<typeof createBrowserIsogitStorage>,
   hubLink: BrowserHubLink,
+  anchorRunId: string,
 ): Promise<KeyPair> {
   const existingKey = deploymentKeys.get(frame.agentAddress);
   if (frame.provisionStep === true) {
@@ -258,6 +260,12 @@ async function deploy(
   if (frame.workflow.definition.id !== workflow.id) {
     throw new Error(
       `browser bundle contains ${workflow.id}, but the hub deployed ${frame.workflow.definition.id}`,
+    );
+  }
+  const deployedRunId = deriveWorkflowRunId(frame.agentAddress);
+  if (deployedRunId !== anchorRunId) {
+    throw new Error(
+      `browser allocation anchor ${anchorRunId} does not match deployment address ${frame.agentAddress}`,
     );
   }
   if (activeRuntime !== undefined) {
@@ -279,6 +287,7 @@ async function deploy(
   const deploymentId = deriveWorkflowRunRepoId(frame.agentAddress);
   activeRuntime = await createRuntime({
     agentAddress: frame.agentAddress,
+    anchorRunId,
     deploymentId,
     hubLink,
     source,
@@ -419,6 +428,7 @@ async function triggerWorkflow(input: string): Promise<BrowserWorkflowResult> {
 
 async function createRuntime(args: {
   agentAddress: string;
+  anchorRunId: string;
   deploymentId: string;
   hubLink: BrowserHubLink;
   source: InferenceSource;
@@ -448,7 +458,7 @@ async function createRuntime(args: {
   const invokeStep = createStepInvoker({
     childTurns,
     deploymentId: args.deploymentId,
-    parentRunId: args.agentAddress,
+    parentRunId: args.anchorRunId,
     source: args.source,
     storage: args.storage,
   });
@@ -462,7 +472,7 @@ async function createRuntime(args: {
     invokeStep,
     newId,
     parentRun: undefined,
-    parentRunId: args.agentAddress,
+    parentRunId: args.anchorRunId,
     repoStore,
     scheduler,
     signalChannel,

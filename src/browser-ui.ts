@@ -77,6 +77,7 @@ type BrowserHubLinkStatus =
 
 type BrowserWorkflowModule = {
   connect(options: {
+    anchorRunId: string;
     databaseName: string;
     hubWebSocketURL: string;
     sidecarId: string;
@@ -224,6 +225,7 @@ async function consumeProvisioningEvents(
       appendTimeline("allocation.anchor", event.anchorRunId);
       appendTimeline("credential.issue", event.sidecarId);
       await workflow.connect({
+        anchorRunId: event.anchorRunId,
         databaseName: `interchange-browser-sidecar-${event.allocationId}`,
         hubWebSocketURL: event.hubWebSocketURL,
         sidecarId: event.sidecarId,
