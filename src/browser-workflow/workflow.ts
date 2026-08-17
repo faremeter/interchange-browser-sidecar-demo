@@ -209,7 +209,9 @@ export function connect(options: ConnectBrowserWorkflowOptions): Promise<void> {
     onDeploy: (frame) => deploy(frame, storage, link, options.anchorRunId),
     onMailInbound: handleMailInbound,
     onRunGrants: async (frame) => {
-      runGrants.set(frame.runId, frame.stepGrants);
+      // Hub frames name the stable run by its full mail address; the browser
+      // runtime indexes that same run by the allocation's local anchor.
+      runGrants.set(deriveWorkflowRunId(frame.runId), frame.stepGrants);
     },
     onWorkflowRunPack: async (args) => {
       const expectedRepoId = deriveWorkflowRunRepoId(args.agentAddress);
