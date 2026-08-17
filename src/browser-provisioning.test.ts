@@ -8,7 +8,7 @@ import {
 describe("browser provisioning broker", () => {
   test("assigns Hub credentials to waiting browser capacity", async () => {
     const broker = createBrowserProvisioningBroker();
-    const browserId = broker.registerBrowser();
+    const browserId = pairBrowser(broker);
     broker.activateBrowser(browserId);
 
     expect(broker.ensure(ensureRequest())).toEqual({
@@ -29,7 +29,7 @@ describe("browser provisioning broker", () => {
 
   test("makes ensure and destroy idempotent for one generation", async () => {
     const broker = createBrowserProvisioningBroker();
-    const browserId = broker.registerBrowser();
+    const browserId = pairBrowser(broker);
     broker.activateBrowser(browserId);
     const request = ensureRequest();
 
@@ -62,7 +62,7 @@ describe("browser provisioning broker", () => {
 
   test("fences older requests after assigning a replacement generation", () => {
     const broker = createBrowserProvisioningBroker();
-    const browserId = broker.registerBrowser();
+    const browserId = pairBrowser(broker);
     broker.activateBrowser(browserId);
     const first = ensureRequest();
     broker.ensure(first);
@@ -86,7 +86,34 @@ describe("browser provisioning broker", () => {
       retryable: false,
     });
   });
+
+  test("allows each pairing code to register one browser", () => {
+    const broker = createBrowserProvisioningBroker();
+    const { pairingCode } = broker.createPairing();
+
+    expect(broker.registerBrowser(pairingCode)).toStartWith("browser_");
+    expect(broker.registerBrowser(pairingCode)).toBeNull();
+    expect(broker.registerBrowser("unknown")).toBeNull();
+  });
+
+  test("releases a pending event poll when a browser unregisters", async () => {
+    const broker = createBrowserProvisioningBroker();
+    const browserId = pairBrowser(broker);
+    const event = broker.nextEvent(browserId, 60_000);
+
+    broker.unregisterBrowser(browserId);
+
+    await expect(event).resolves.toBeNull();
+  });
 });
+
+function pairBrowser(
+  broker: ReturnType<typeof createBrowserProvisioningBroker>,
+): string {
+  const browserId = broker.registerBrowser(broker.createPairing().pairingCode);
+  if (browserId === null) throw new Error("Fresh pairing code was rejected");
+  return browserId;
+}
 
 function ensureRequest(): EnsureBrowserSidecarRequest {
   return {

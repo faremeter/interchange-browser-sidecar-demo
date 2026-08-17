@@ -34,6 +34,11 @@ export type BrowserDestroyed = {
 
 export type BrowserProvisioningEvent = BrowserAssignment | BrowserDestroyed;
 
+export type BrowserPairing = {
+  pairingCode: string;
+  expiresAt: number;
+};
+
 export type EnsureBrowserSidecarResult =
   | { kind: "accepted"; externalRef: string }
   | {
@@ -59,11 +64,30 @@ type Assignment = {
   destroyed: boolean;
 };
 
+const PAIRING_TTL_MS = 5 * 60_000;
+
 export function createBrowserProvisioningBroker() {
   const browsers = new Map<string, BrowserSlot>();
   const assignments = new Map<string, Assignment>();
+  const pairings = new Map<string, number>();
 
-  function registerBrowser(): string {
+  function createPairing(): BrowserPairing {
+    const now = Date.now();
+    for (const [pairingCode, expiresAt] of pairings) {
+      if (expiresAt <= now) pairings.delete(pairingCode);
+    }
+    const pairingCode = crypto.randomUUID();
+    const expiresAt = now + PAIRING_TTL_MS;
+    pairings.set(pairingCode, expiresAt);
+    return { pairingCode, expiresAt };
+  }
+
+  function registerBrowser(pairingCode: string): string | null {
+    const expiresAt = pairings.get(pairingCode);
+    pairings.delete(pairingCode);
+    if (expiresAt === undefined || expiresAt <= Date.now()) {
+      return null;
+    }
     const browserId = `browser_${crypto.randomUUID()}`;
     browsers.set(browserId, {
       id: browserId,
@@ -90,10 +114,25 @@ export function createBrowserProvisioningBroker() {
     browser.available = true;
   }
 
+  function assertBrowserCanTrigger(browserId: string): void {
+    requireBrowser(browserId);
+    const assignment = [...assignments.values()].find(
+      (candidate) => candidate.browserId === browserId && !candidate.destroyed,
+    );
+    if (assignment === undefined) {
+      throw new Error(`Browser ${browserId} has no active deployment`);
+    }
+  }
+
   function unregisterBrowser(browserId: string): void {
     const browser = browsers.get(browserId);
     if (browser === undefined) return;
     browser.available = false;
+    for (const waiter of browser.waiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(null);
+    }
+    browser.waiters.length = 0;
     browsers.delete(browserId);
   }
 
@@ -212,6 +251,8 @@ export function createBrowserProvisioningBroker() {
 
   return {
     activateBrowser,
+    assertBrowserCanTrigger,
+    createPairing,
     destroy,
     ensure,
     nextEvent,

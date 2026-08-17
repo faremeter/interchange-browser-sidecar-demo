@@ -1,10 +1,11 @@
 # Interchange browser sidecar demo
 
-This is a standalone demo of an Interchange workflow and agent running inside
-a browser tab. The Interchange Hub still owns deployment, trigger delivery,
-per-run authorization grants, and the durable workflow-run repository. The
-browser enforces those grants while owning the workflow runtime, agent loop,
-direct Anthropic request, browser-only tool, and LightningFS working repository.
+This is a standalone demo that attaches an Interchange debugging workflow to a
+live browser tab through its developer console. The Interchange Hub still owns
+deployment, trigger delivery, per-run authorization grants, and the durable
+workflow-run repository. The attached tab enforces those grants while owning
+the workflow runtime, agent loop, direct Anthropic request, read-only page
+inspection tool, and LightningFS working repository.
 
 The browser runtime source lives in this repository. `bun start` bundles it in
 memory against the sibling Interchange checkout and serves the result; no
@@ -24,7 +25,7 @@ cd packages/provisioner
 bun link
 ```
 
-Start a clean Interchange Hub without the production sidecar:
+Prepare a clean Interchange Hub without the production sidecar:
 
 ```bash
 cd ../interchange
@@ -51,15 +52,33 @@ BROWSER_DEMO_CONTROL_TOKEN=browser-demo-local \
 bin/dev --seed --no-sidecar
 ```
 
-Open <http://127.0.0.1:4174>.
+Open <http://127.0.0.1:4174>, copy the generated one-time installation command,
+and paste it into the developer console of a non-sensitive page you want to
+debug. Once it resolves, ask the debugger from that console:
+
+```js
+await interchangeDebug.run(
+  "Inspect this page and explain what could be causing the broken layout.",
+);
+```
+
+Disconnect the tab with `await interchangeDebug.disconnect()`.
 
 Use only a temporary, restricted Anthropic key. Direct browser inference means
 the key is sent to the tab in the deployment and is visible to anyone who can
-inspect that tab.
+inspect that tab. Page content returned by `inspect_page` is sent to the model,
+so do not attach the debugger to a page containing data you cannot share.
+
+The console installer is intentionally a prototype. Strict Content Security
+Policy and HTTPS mixed-content rules can block the module, Hub WebSocket, or
+model request. A browser extension is the practical next step for reliably
+attaching to arbitrary pages.
 
 ## What the demo proves
 
-- The browser registers directly on the Hub's ordinary sidecar WebSocket.
+- A one-time, five-minute pairing code lets a target tab register without
+  putting long-lived Hub credentials in the pasted command.
+- The attached tab registers directly on the Hub's ordinary sidecar WebSocket.
 - The workflow requests exclusive, same-deployment sidecar placement.
 - Hub calls the linked `SidecarProvisioner` exported by this repository; it
   assigns Hub-generated, allocation-scoped credentials to the waiting browser
@@ -69,7 +88,8 @@ inspect that tab.
 - The Hub delivers the deployment and trigger to the browser tab.
 - The Hub delivers per-run grants that the browser enforces together with the
   bundled tool's standard authorization floor.
-- The agent calls `browser_info`, which reads `navigator.userAgent` in the tab.
+- The agent calls `inspect_page`, which reads the target tab's live DOM without
+  exposing form values, cookies, storage, or URL query and fragment data.
 - The Anthropic request originates from the browser and appears in its network
   inspector.
 - Inbound triggers are durably claimed in LightningFS before the browser
@@ -79,10 +99,10 @@ inspect that tab.
 - Closing the tab stops the execution host; Hub observes the WebSocket loss and
   runs its normal allocation release lifecycle after the reconnect grace.
 
-The Bun server builds and serves the browser runtime from TypeScript, publishes
-the workflow definition exported by that same source, calls ordinary Hub APIs,
-and brokers provisioner assignments to waiting tabs. It does not execute the
-workflow or agent.
+The Bun server builds and serves the console installer and browser runtime from
+TypeScript, publishes the workflow definition exported by that same source,
+calls ordinary Hub APIs, and brokers provisioner assignments to paired tabs. It
+does not inspect the page or execute the workflow or agent.
 
 ## Browser runtime source
 

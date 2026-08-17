@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Interchange browser sidecar demo</title>
+    <title>Interchange browser debugger</title>
     <style>
       body {
-        max-width: 860px;
+        max-width: 820px;
         margin: 48px auto;
         padding: 0 20px;
         font:
@@ -20,117 +20,64 @@
       section {
         margin-top: 32px;
       }
-      .status {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        border: 1px solid #ccc;
-      }
-      .status div {
-        padding: 12px;
-        border-right: 1px solid #ccc;
-      }
-      .status div:last-child {
-        border-right: 0;
-      }
-      .status span {
-        display: block;
-        font-weight: 600;
-      }
-      label {
-        display: block;
-        margin-bottom: 8px;
-        font-weight: 600;
-      }
       textarea {
         box-sizing: border-box;
         width: 100%;
-        min-height: 110px;
-        padding: 8px;
-        font: inherit;
+        min-height: 150px;
+        padding: 10px;
+        font:
+          13px/1.45 ui-monospace,
+          monospace;
       }
       button {
-        margin-top: 8px;
-        padding: 6px 12px;
+        margin: 8px 8px 0 0;
+        padding: 7px 12px;
         font: inherit;
       }
-      #result {
-        min-height: 80px;
+      code {
+        font-family: ui-monospace, monospace;
+      }
+      .note {
         padding: 12px;
-        border: 1px solid #ccc;
-        white-space: pre-wrap;
-      }
-      #user-agent {
-        overflow-wrap: anywhere;
-        font-family: ui-monospace, monospace;
-      }
-      #timeline {
-        padding-left: 24px;
-      }
-      #timeline li {
-        display: grid;
-        grid-template-columns: 11rem 1fr;
-        gap: 1rem;
-        margin: 8px 0;
-      }
-      .timeline-label {
-        font-family: ui-monospace, monospace;
-      }
-      @media (max-width: 600px) {
-        .status {
-          grid-template-columns: 1fr;
-        }
-        .status div,
-        .status div:last-child {
-          border-right: 0;
-          border-bottom: 1px solid #ccc;
-        }
-        .status div:last-child {
-          border-bottom: 0;
-        }
+        border-left: 3px solid #888;
+        background: #f5f5f5;
       }
     </style>
   </head>
   <body>
     <main>
-      <h1>Interchange browser sidecar demo</h1>
+      <h1>Interchange browser debugger</h1>
       <p>
-        The Hub delivers deployments and triggers. This tab runs the workflow,
-        agent loop, browser tool, inference request, and LightningFS working
-        repository.
+        Attach the Interchange workflow runtime to another browser tab, then let
+        its agent inspect that page's live DOM.
       </p>
 
-      <section aria-label="Status" class="status">
-        <div>Hub <span id="connection" data-state="pending">Loading</span></div>
-        <div>
-          Workflow <span id="deployment" data-state="pending">Waiting</span>
-        </div>
-        <div>
-          Browser runtime
-          <span id="execution" data-state="pending">Starting</span>
-        </div>
-      </section>
-
       <section>
-        <h2>Run workflow</h2>
-        <form id="prompt-form">
-          <label for="prompt">Claim to fact-check</label>
-          <textarea id="prompt">
-Fact check this claim: Sydney is the capital of Australia. Keep the answer concise.</textarea>
-          <button id="submit" type="submit" disabled>Run in browser</button>
-        </form>
-
-        <h2>Result</h2>
-        <div id="result">Waiting for the browser sidecar to deploy…</div>
+        <h2>1. Install in the target tab</h2>
         <p>
-          <strong>Browser tool:</strong>
-          <span id="user-agent"></span>
+          Open DevTools in a page you want to debug, paste this command into the
+          console, and press Enter.
         </p>
+        <textarea id="install-command" readonly>Creating pairing…</textarea>
+        <button id="copy-command" type="button" disabled>Copy command</button>
+        <button id="refresh-pairing" type="button">New pairing code</button>
+        <p id="pairing-status">Creating a short-lived pairing code…</p>
       </section>
 
       <section>
-        <h2>Execution log</h2>
-        <ol id="timeline"></ol>
+        <h2>2. Ask the page debugger</h2>
+        <p>Once installation resolves, run this in the target console:</p>
+        <pre><code>await interchangeDebug.run("What on this page could explain the broken layout?")</code></pre>
+        <p>Disconnect it with:</p>
+        <pre><code>await interchangeDebug.disconnect()</code></pre>
       </section>
+
+      <p class="note">
+        The agent can send inspected page content to the configured model. Only
+        attach it to pages whose data you are comfortable sharing. Strict CSP or
+        HTTPS mixed-content rules may block console installation; a browser
+        extension is the intended path for those pages.
+      </p>
     </main>
     <script type="module" src="/browser-ui.js"></script>
   </body>

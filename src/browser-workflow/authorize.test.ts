@@ -5,21 +5,21 @@ import type { GrantRule } from "@intx/types/authz";
 import { createBrowserWorkflowAuthorize } from "./authorize";
 
 const ANCHOR_RUN_ID = "run_demo";
-const TOOL_DEFINITIONS = [{ name: "browser_info" }];
+const TOOL_DEFINITIONS = [{ name: "inspect_page" }];
 
 describe("browser workflow authorization", () => {
   test("enforces the bundled tool floor after Hub grants arrive", async () => {
     const authorize = createAuthorize([]);
 
     await expect(
-      authorize("tool:browser_info", "invoke", {
-        runId: "fact_check__0",
+      authorize("tool:inspect_page", "invoke", {
+        runId: "debug_page__0",
         stepId: "agent",
       }),
     ).resolves.toMatchObject({ effect: "allow" });
     await expect(
       authorize("tool:unknown", "invoke", {
-        runId: "fact_check__0",
+        runId: "debug_page__0",
         stepId: "agent",
       }),
     ).resolves.toMatchObject({ effect: null });
@@ -29,15 +29,15 @@ describe("browser workflow authorization", () => {
     const authorize = createAuthorize([
       grant({
         id: "hub-deny-browser-info",
-        resource: "tool:browser_info",
+        resource: "tool:inspect_page",
         action: "invoke",
         effect: "deny",
       }),
     ]);
 
     await expect(
-      authorize("tool:browser_info", "invoke", {
-        runId: "fact_check__0",
+      authorize("tool:inspect_page", "invoke", {
+        runId: "debug_page__0",
         stepId: "agent",
       }),
     ).resolves.toMatchObject({ effect: "deny" });
@@ -51,8 +51,8 @@ describe("browser workflow authorization", () => {
     });
 
     await expect(
-      authorize("tool:browser_info", "invoke", {
-        runId: "fact_check__0",
+      authorize("tool:inspect_page", "invoke", {
+        runId: "debug_page__0",
         stepId: "agent",
       }),
     ).rejects.toThrow(`run ${ANCHOR_RUN_ID} has no Hub grants`);
@@ -62,8 +62,7 @@ describe("browser workflow authorization", () => {
 function createAuthorize(grants: readonly GrantRule[]) {
   return createBrowserWorkflowAuthorize({
     anchorRunId: ANCHOR_RUN_ID,
-    getRunGrants: (runId) =>
-      runId === ANCHOR_RUN_ID ? grants : undefined,
+    getRunGrants: (runId) => (runId === ANCHOR_RUN_ID ? grants : undefined),
     toolDefinitions: TOOL_DEFINITIONS,
   });
 }

@@ -48,48 +48,54 @@ import {
 } from "./hub-link";
 import { createBrowserWorkflowAuthorize } from "./authorize";
 import type { BrowserClaimCheck } from "./claim-check";
-import { createBrowserWorkflowRepo } from "./workflow-repo";
-import { restoreBrowserWorkflowRepo } from "./workflow-repo";
+import { inspectPage, inspectPageToolDefinition } from "./page-inspector";
+import {
+  createBrowserWorkflowRepo,
+  restoreBrowserWorkflowRepo,
+  type BrowserWorkflowRepo,
+} from "./workflow-repo";
 
-const SECTION_ID = "fact_check";
+const SECTION_ID = "debug_page";
 const BODY_STEP_ID = "agent";
 const AGENT_SYSTEM_PROMPT =
-  "Always call browser_info first. Then assess the user's claim from model knowledge. Clearly label it true, false, misleading, or unverifiable and give a concise explanation. Say that browser execution was verified, but do not claim you browsed or checked external sources.";
+  "You are debugging the live browser page where this workflow runs. Always call inspect_page before answering. Use targeted CSS selectors for follow-up inspection when useful. Explain the observed page evidence, distinguish evidence from likely causes, and suggest a concrete next debugging step. Do not claim access to network traffic, console history, cookies, storage, or source maps, and do not claim to have changed the page.";
 const AGENT_INFERENCE = {
   sources: [{ provider: "anthropic", model: "claude-haiku-4-5-20251001" }],
 };
 
-const browserInfoTool = defineTool<BaseEnv>({
-  id: "@intx-spike/browser/info",
-  definitions: [{ name: "browser_info" }],
+const inspectPageTool = defineTool<BaseEnv>({
+  id: "@intx-spike/browser/inspect-page",
+  definitions: [inspectPageToolDefinition],
   factory: (): ToolBundle => ({
-    definitions: [
-      {
-        name: "browser_info",
-        description: "Report the browser user agent executing this workflow",
-        inputSchema: { type: "object", properties: {} },
-      },
-    ],
+    definitions: [inspectPageToolDefinition],
     async run(call: ToolCall, _signal: AbortSignal): Promise<ToolResult> {
-      return {
-        callId: call.id,
-        content: JSON.stringify({ userAgent: navigator.userAgent }),
-        isError: false,
-      };
+      try {
+        return {
+          callId: call.id,
+          content: JSON.stringify(inspectPage(call.arguments)),
+          isError: false,
+        };
+      } catch (cause) {
+        return {
+          callId: call.id,
+          content: cause instanceof Error ? cause.message : String(cause),
+          isError: true,
+        };
+      }
     },
   }),
 });
 
 const agent = defineAgent({
-  id: "browser-bundled-agent",
+  id: "browser-debug-agent",
   systemPrompt: AGENT_SYSTEM_PROMPT,
-  tools: [browserInfoTool],
+  tools: [inspectPageTool],
   capabilities: [],
   inference: AGENT_INFERENCE,
 });
 
 // The Hub needs the declarative shape for deployment and source resolution,
-// but the executable browser_info factory lives only in the downloaded
+// but the executable inspect_page factory lives only in the downloaded
 // bundle. Keeping it out of workflow.json is the point of prebundling code.
 const hubAgent = defineAgent({
   id: agent.id,
@@ -100,7 +106,7 @@ const hubAgent = defineAgent({
 });
 
 const bodyWorkflow = defineWorkflow({
-  id: "browser-bundled-workflow__fact_check",
+  id: "browser-debug-workflow__debug_page",
   trigger: { type: "manual" },
   steps: { [BODY_STEP_ID]: step({ agent }) },
 });
@@ -122,7 +128,7 @@ const deployedSection: OnTriggerPrimitive = {
 
 /** Definition stored in the ordinary Hub workflow asset. */
 export const authoredWorkflow = defineWorkflow({
-  id: "browser-bundled-workflow",
+  id: "browser-debug-workflow",
   sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
   steps: { [SECTION_ID]: authoredSection },
 });
@@ -136,7 +142,7 @@ export const workflow = defineWorkflow({
 
 export const manifest = Object.freeze({
   workflowId: workflow.id,
-  toolNames: ["browser_info"],
+  toolNames: ["inspect_page"],
 });
 
 export type ConnectBrowserWorkflowOptions = {
@@ -492,7 +498,7 @@ async function createRuntime(args: {
   const authorize = createBrowserWorkflowAuthorize({
     anchorRunId: args.anchorRunId,
     getRunGrants: (runId) => runGrants.get(runId),
-    toolDefinitions: browserInfoTool.definitions,
+    toolDefinitions: inspectPageTool.definitions,
   });
   const invokeStep = createStepInvoker({
     authorize,

@@ -22,7 +22,7 @@ const MailResponse = type({ messageId: "string" });
 const PrincipalResponse = type({ tenantId: "string", tenantSlug: "string" });
 const PrincipalListResponse = type({ data: PrincipalResponse.array() });
 
-const ASSET_NAME = "browser-bundled-fact-check";
+const ASSET_NAME = "browser-debug-workflow";
 const INFERENCE_PROVIDER_NAME = "Browser Demo Anthropic";
 const INFERENCE_CREDENTIAL_NAME = "Browser Demo Anthropic Key";
 

@@ -11,8 +11,9 @@ import { buildBrowserWorkflow } from "./browser-workflow/build";
 import { authoredWorkflow } from "./browser-workflow/workflow";
 import { createDemoHubClient, type InferenceSource } from "./hub";
 
-const TriggerRequest = type({ prompt: "string" });
+const TriggerRequest = type({ browserId: "string", prompt: "string" });
 const BrowserRequest = type({ browserId: "string" });
+const BrowserPairingRequest = type({ pairingCode: "string" });
 const EnsureBrowserSidecarRequest = type({
   allocationId: "string",
   generation: "number",
@@ -42,6 +43,9 @@ const browserWorkflow = await buildBrowserWorkflow({
   entrypoint: path.join(import.meta.dir, "browser-workflow/workflow.ts"),
 });
 const browserUI = await buildBrowserUI();
+const debugSidecar = await buildBrowserWorkflow({
+  entrypoint: path.join(import.meta.dir, "debug-sidecar.ts"),
+});
 const provisioning = createBrowserProvisioningBroker();
 const hub = createDemoHubClient({
   hubURL: HUB_HTTP_URL,
@@ -61,15 +65,21 @@ const hub = createDemoHubClient({
 });
 let deployment: Awaited<ReturnType<typeof hub.bootstrap>> | undefined;
 let bootstrapPromise:
-  | Promise<Awaited<ReturnType<typeof hub.bootstrap>>>
-  | undefined;
+  Promise<Awaited<ReturnType<typeof hub.bootstrap>>> | undefined;
 
 const server = Bun.serve({
   hostname: HOST,
   port: PORT,
+  idleTimeout: 30,
   async fetch(request) {
     const url = new URL(request.url);
     try {
+      if (
+        request.method === "OPTIONS" &&
+        isBrowserAccessiblePath(url.pathname)
+      ) {
+        return withBrowserAccess(new Response(null, { status: 204 }));
+      }
       if (request.method === "GET" && url.pathname === "/") {
         return fileResponse("index.html", "text/html; charset=utf-8");
       }
@@ -79,27 +89,48 @@ const server = Bun.serve({
       if (request.method === "GET" && url.pathname === "/browser-workflow.js") {
         return javascriptResponse(browserWorkflow.source);
       }
+      if (request.method === "GET" && url.pathname === "/debug-sidecar.js") {
+        return javascriptResponse(debugSidecar.source);
+      }
+      if (request.method === "POST" && url.pathname === "/api/pairings") {
+        const pairing = provisioning.createPairing();
+        return Response.json({
+          ...pairing,
+          installCommand: createInstallCommand(url.origin, pairing.pairingCode),
+        });
+      }
       if (
         request.method === "POST" &&
         url.pathname === "/api/browser/register"
       ) {
-        return Response.json({ browserId: provisioning.registerBrowser() });
+        const { pairingCode } = BrowserPairingRequest.assert(
+          await request.json(),
+        );
+        const browserId = provisioning.registerBrowser(pairingCode);
+        if (browserId === null) {
+          return withBrowserAccess(
+            Response.json(
+              { error: "Invalid or expired browser pairing code" },
+              { status: 401 },
+            ),
+          );
+        }
+        return withBrowserAccess(Response.json({ browserId }));
       }
       if (request.method === "POST" && url.pathname === "/api/bootstrap") {
         const { browserId } = BrowserRequest.assert(await request.json());
         provisioning.activateBrowser(browserId);
-        return Response.json(await bootstrap());
+        return withBrowserAccess(Response.json(await bootstrap()));
       }
       if (request.method === "GET" && url.pathname === "/api/browser/events") {
         const browserId = url.searchParams.get("browserId");
         if (browserId === null || browserId === "") {
-          return Response.json(
-            { error: "browserId is required" },
-            { status: 400 },
+          return withBrowserAccess(
+            Response.json({ error: "browserId is required" }, { status: 400 }),
           );
         }
         const event = await provisioning.nextEvent(browserId);
-        return Response.json(event ?? { kind: "heartbeat" });
+        return withBrowserAccess(Response.json(event ?? { kind: "heartbeat" }));
       }
       if (
         request.method === "POST" &&
@@ -107,7 +138,7 @@ const server = Bun.serve({
       ) {
         const { browserId } = BrowserRequest.assert(await request.json());
         provisioning.unregisterBrowser(browserId);
-        return new Response(null, { status: 204 });
+        return withBrowserAccess(new Response(null, { status: 204 }));
       }
       if (
         request.method === "POST" &&
@@ -131,23 +162,28 @@ const server = Bun.serve({
         return Response.json({ kind: "destroyed" });
       }
       if (request.method === "POST" && url.pathname === "/api/trigger") {
-        const active = deployment ?? (await bootstrap());
         const body = TriggerRequest.assert(await request.json());
+        provisioning.assertBrowserCanTrigger(body.browserId);
         const prompt = body.prompt.trim();
         if (prompt === "") {
-          return Response.json(
-            { error: "Prompt cannot be empty" },
-            { status: 400 },
+          return withBrowserAccess(
+            Response.json({ error: "Prompt cannot be empty" }, { status: 400 }),
           );
         }
-        return Response.json(await hub.trigger(active.deploymentId, prompt));
+        const active = deployment ?? (await bootstrap());
+        return withBrowserAccess(
+          Response.json(await hub.trigger(active.deploymentId, prompt)),
+        );
       }
       return new Response(null, { status: 404 });
     } catch (cause) {
-      return Response.json(
+      const response = Response.json(
         { error: cause instanceof Error ? cause.message : String(cause) },
         { status: 500 },
       );
+      return isBrowserAccessiblePath(url.pathname)
+        ? withBrowserAccess(response)
+        : response;
     }
   },
 });
@@ -188,9 +224,6 @@ async function buildBrowserUI(): Promise<string> {
     entrypoints: [path.join(import.meta.dir, "browser-ui.ts")],
     target: "browser",
     format: "esm",
-    define: {
-      __BROWSER_WORKFLOW_BUNDLE_URL__: JSON.stringify("/browser-workflow.js"),
-    },
   });
   if (!built.success) {
     throw new Error(
@@ -216,12 +249,37 @@ function fileResponse(filename: string, contentType: string): Response {
 }
 
 function javascriptResponse(source: string): Response {
-  return new Response(source, {
-    headers: {
-      "cache-control": "no-store",
-      "content-type": "text/javascript; charset=utf-8",
-    },
-  });
+  return withBrowserAccess(
+    new Response(source, {
+      headers: {
+        "cache-control": "no-store",
+        "content-type": "text/javascript; charset=utf-8",
+      },
+    }),
+  );
+}
+
+function createInstallCommand(origin: string, pairingCode: string): string {
+  const moduleURL = `${origin}/debug-sidecar.js`;
+  return `globalThis.interchangeDebug = await import(${JSON.stringify(moduleURL)}).then(({ install }) => install({ serverURL: ${JSON.stringify(origin)}, pairingCode: ${JSON.stringify(pairingCode)} }))`;
+}
+
+function isBrowserAccessiblePath(pathname: string): boolean {
+  return (
+    pathname === "/browser-workflow.js" ||
+    pathname === "/debug-sidecar.js" ||
+    pathname === "/api/bootstrap" ||
+    pathname === "/api/trigger" ||
+    pathname.startsWith("/api/browser/")
+  );
+}
+
+function withBrowserAccess(response: Response): Response {
+  response.headers.set("access-control-allow-origin", "*");
+  response.headers.set("access-control-allow-headers", "content-type");
+  response.headers.set("access-control-allow-methods", "GET, POST, OPTIONS");
+  response.headers.set("access-control-allow-private-network", "true");
+  return response;
 }
 
 function authorizeProvisioner(request: Request): Response | null {
