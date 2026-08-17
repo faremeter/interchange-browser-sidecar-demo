@@ -7,7 +7,7 @@
   "scripts": {
     "prepare:interchange": "bun run src/link-interchange.ts",
     "start": "bun run prepare:interchange && bun --conditions=intx-src run src/server.ts",
-    "test": "bun test",
+    "test": "bun --conditions=intx-src test",
     "typecheck": "bun run prepare:interchange && bunx tsc --noEmit"
   },
   "dependencies": {

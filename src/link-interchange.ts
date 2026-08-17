@@ -7,6 +7,7 @@ const interchangeDirectory = path.resolve(
 );
 const packageNames = [
   "agent",
+  "authz",
   "crypto",
   "mime",
   "pack-transport",

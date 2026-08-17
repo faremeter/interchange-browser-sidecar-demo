@@ -10,10 +10,10 @@ import { generateKeyPair } from "@intx/crypto";
 import { parseMailToEmail } from "@intx/mime";
 import { createBrowserIsogitStorage } from "@intx/storage-isogit/browser";
 import { base64Decode, deriveWorkflowRunId } from "@intx/types";
+import type { GrantRule } from "@intx/types/authz";
 import type {
   AgentDeployFrame,
   MailInboundFrame,
-  RunGrantsFrame,
 } from "@intx/types/sidecar";
 import type {
   ConversationTurn,
@@ -39,6 +39,7 @@ import {
   type SpawnSuspendableChild,
   type StepInvoker,
   type WorkflowRun,
+  type WorkflowAuthorizeFn,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
@@ -48,6 +49,7 @@ import {
   type BrowserHubLink,
   type BrowserHubLinkStatus,
 } from "./hub-link";
+import { createBrowserWorkflowAuthorize } from "./authorize";
 import { createBrowserWorkflowRepo } from "./workflow-repo";
 import { restoreBrowserWorkflowRepo } from "./workflow-repo";
 
@@ -167,6 +169,7 @@ type BrowserDeploymentRuntime = {
   deploymentId: string;
   invokeStep: StepInvoker;
   newId: (prefix: string) => string;
+  authorize: WorkflowAuthorizeFn;
   parentRun: WorkflowRun | undefined;
   parentRunId: string;
   repoStore: RepoStore;
@@ -180,7 +183,7 @@ let activeHubLink: BrowserHubLink | undefined;
 let triggerQueue = Promise.resolve();
 let connectPromise: Promise<void> | undefined;
 const deploymentKeys = new Map<string, KeyPair>();
-const runGrants = new Map<string, RunGrantsFrame["stepGrants"]>();
+const runGrants = new Map<string, readonly GrantRule[]>();
 const statusListeners = new Set<(status: BrowserHubLinkStatus) => void>();
 
 export function subscribeStatus(
@@ -234,12 +237,12 @@ export async function disconnect(): Promise<void> {
   activeHubLink = undefined;
   connectPromise = undefined;
   deploymentKeys.clear();
-  runGrants.clear();
   triggerQueue = Promise.resolve();
   if (runtime?.parentRun !== undefined) {
     void runtime.parentRun.cancel("self", "sidecar allocation destroyed");
     await runtime.parentRun.complete.catch(() => undefined);
   }
+  runGrants.clear();
 }
 
 async function deploy(
@@ -455,7 +458,13 @@ async function createRuntime(args: {
   const scheduler = createInMemoryScheduler({ repoStore, clock });
   const childResults = new Map<string, Promise<RunResult>>();
   const childTurns = new Map<string, ConversationTurn[]>();
+  const authorize = createBrowserWorkflowAuthorize({
+    anchorRunId: args.anchorRunId,
+    getRunGrants: (runId) => runGrants.get(runId),
+    toolDefinitions: browserInfoTool.definitions,
+  });
   const invokeStep = createStepInvoker({
+    authorize,
     childTurns,
     deploymentId: args.deploymentId,
     parentRunId: args.anchorRunId,
@@ -471,6 +480,7 @@ async function createRuntime(args: {
     deploymentId: args.deploymentId,
     invokeStep,
     newId,
+    authorize,
     parentRun: undefined,
     parentRunId: args.anchorRunId,
     repoStore,
@@ -485,6 +495,7 @@ async function createRuntime(args: {
 }
 
 function createStepInvoker(args: {
+  authorize: WorkflowAuthorizeFn;
   childTurns: Map<string, ConversationTurn[]>;
   deploymentId: string;
   parentRunId: string;
@@ -505,11 +516,8 @@ function createStepInvoker(args: {
       audit: agentStore,
       workdir,
       directors: createDefaultDirectorRegistry(),
-      authorize: async () => ({
-        effect: "allow",
-        matchingGrants: [],
-        resolvedBy: null,
-      }),
+      authorize: (resource, action) =>
+        args.authorize(resource, action, request.authzContext),
     });
 
     try {
@@ -593,7 +601,7 @@ function createParentEnv(
     signalChannel: runtime.signalChannel,
     blobs: runtime.blobs,
     directors: createDefaultDirectorRegistry(),
-    authorize: allow,
+    authorize: runtime.authorize,
     invokeStep: runtime.invokeStep,
     spawnChild: unsupportedChildWorkflow,
     spawnSuspendableChild: runtime.spawnSuspendableChild,
@@ -614,7 +622,7 @@ function createChildEnv(
     signalChannel,
     blobs: runtime.blobs,
     directors: createDefaultDirectorRegistry(),
-    authorize: allow,
+    authorize: runtime.authorize,
     invokeStep: runtime.invokeStep,
     spawnChild: unsupportedChildWorkflow,
     clock,
@@ -664,14 +672,6 @@ function findInputSignal(
 const unsupportedChildWorkflow: SpawnChildWorkflow = async () => {
   throw new Error("browser workflow spike does not support childWorkflow");
 };
-
-async function allow() {
-  return {
-    effect: "allow" as const,
-    matchingGrants: [],
-    resolvedBy: null,
-  };
-}
 
 function encodeInput(input: unknown): string {
   if (typeof input === "string") return input;

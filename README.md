@@ -2,9 +2,9 @@
 
 This is a standalone demo of an Interchange workflow and agent running inside
 a browser tab. The Interchange Hub still owns deployment, trigger delivery,
-authorization, and the durable workflow-run repository. The browser owns the
-workflow runtime, agent loop, direct Anthropic request, browser-only tool, and
-LightningFS working repository.
+per-run authorization grants, and the durable workflow-run repository. The
+browser enforces those grants while owning the workflow runtime, agent loop,
+direct Anthropic request, browser-only tool, and LightningFS working repository.
 
 The browser runtime source lives in this repository. `bun start` bundles it in
 memory against the sibling Interchange checkout and serves the result; no
@@ -67,6 +67,8 @@ inspect that tab.
 - The demo registers the supplied Anthropic key as a tenant-owned catalog
   offering and deploys with that durable offering ID.
 - The Hub delivers the deployment and trigger to the browser tab.
+- The Hub delivers per-run grants that the browser enforces together with the
+  bundled tool's standard authorization floor.
 - The agent calls `browser_info`, which reads `navigator.userAgent` in the tab.
 - The Anthropic request originates from the browser and appears in its network
   inspector.
