@@ -1,4 +1,5 @@
 export type BrowserWorkflowBuildOptions = {
+  conversationEnabled?: boolean;
   entrypoint: string;
 };
 
@@ -16,6 +17,11 @@ export async function buildBrowserWorkflow(
     target: "browser",
     format: "esm",
     conditions: ["intx-src"],
+    define: {
+      __BROWSER_DEMO_CONVERSATION_ENABLED__: String(
+        options.conversationEnabled ?? false,
+      ),
+    },
   });
   if (!build.success) {
     throw new Error(

@@ -35,6 +35,7 @@ import {
   type SpawnChildWorkflow,
   type SpawnSuspendableChild,
   type StepInvoker,
+  type Trigger,
   type WorkflowRun,
   type WorkflowAuthorizeFn,
   type WorkflowRuntimeEnv,
@@ -55,6 +56,12 @@ import {
   type BrowserWorkflowRepo,
 } from "./workflow-repo";
 
+declare const __BROWSER_DEMO_CONVERSATION_ENABLED__: boolean;
+
+const CONVERSATION_ENABLED =
+  typeof __BROWSER_DEMO_CONVERSATION_ENABLED__ !== "undefined" &&
+  __BROWSER_DEMO_CONVERSATION_ENABLED__;
+const MANUAL_TRIGGER: Trigger = { type: "manual" };
 const SECTION_ID = "debug_page";
 const BODY_STEP_ID = "agent";
 const AGENT_SYSTEM_PROMPT =
@@ -127,17 +134,27 @@ const deployedSection: OnTriggerPrimitive = {
 };
 
 /** Definition stored in the ordinary Hub workflow asset. */
-export const authoredWorkflow = defineWorkflow({
-  id: "browser-debug-workflow",
-  sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
-  steps: { [SECTION_ID]: authoredSection },
-});
+export function createAuthoredWorkflow(conversationEnabled: boolean) {
+  return defineWorkflow({
+    id: "browser-debug-workflow",
+    ...(conversationEnabled ? { trigger: MANUAL_TRIGGER } : {}),
+    sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
+    steps: conversationEnabled
+      ? { [BODY_STEP_ID]: step({ agent: hubAgent, triggers: "unbounded" }) }
+      : { [SECTION_ID]: authoredSection },
+  });
+}
+
+export const authoredWorkflow = createAuthoredWorkflow(CONVERSATION_ENABLED);
 
 /** Equivalent deployment projection consumed by the prebundled runtime. */
 export const workflow = defineWorkflow({
   id: authoredWorkflow.id,
+  ...(CONVERSATION_ENABLED ? { trigger: MANUAL_TRIGGER } : {}),
   sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
-  steps: { [SECTION_ID]: deployedSection },
+  steps: CONVERSATION_ENABLED
+    ? { [BODY_STEP_ID]: step({ agent, triggers: "unbounded" }) }
+    : { [SECTION_ID]: deployedSection },
 });
 
 export const manifest = Object.freeze({
@@ -182,6 +199,7 @@ type BrowserDeploymentRuntime = {
   scheduler: ReturnType<typeof createInMemoryScheduler>;
   signalChannel: SignalChannel;
   spawnSuspendableChild: SpawnSuspendableChild;
+  turnOutputs: Map<string, unknown>;
 };
 
 let activeRuntime: BrowserDeploymentRuntime | undefined;
@@ -340,7 +358,7 @@ function resolveBodySource(frame: AgentDeployFrame): InferenceSource {
 async function handleMailInbound(
   frame: MailInboundFrame,
   messageId: string,
-): Promise<{ completion: Promise<BrowserWorkflowResult> | null }> {
+): Promise<{ completion: Promise<unknown> | null }> {
   const runtime = activeRuntime;
   if (runtime === undefined || runtime.agentAddress !== frame.agentAddress) {
     throw new Error(
@@ -372,7 +390,7 @@ function parseTriggerInput(rawMessage: string, messageId: string): string {
 function queueTrigger(
   runtime: BrowserDeploymentRuntime,
   messageId: string,
-): Promise<BrowserWorkflowResult> {
+): Promise<unknown> {
   const result = triggerQueue.then(async () => {
     const envelope = await runtime.claimCheck.dequeue(
       runtime.agentAddress,
@@ -404,17 +422,18 @@ async function triggerWorkflow(
   runtime: BrowserDeploymentRuntime,
   input: string,
   messageId: string,
-): Promise<BrowserWorkflowResult> {
+): Promise<unknown> {
   if (activeRuntime !== runtime) {
     throw new Error("browser sidecar received a trigger before deployment");
   }
   const parentLog = await runtime.repoStore.read(runtime.parentRunId);
-  const childIndex = parentLog.filter(
-    (event) => event.kind === "ChildSpawned",
-  ).length;
-  const childRunId = `${SECTION_ID}__${String(childIndex)}`;
+  const childRunId = CONVERSATION_ENABLED
+    ? undefined
+    : `${SECTION_ID}__${String(
+        parentLog.filter((event) => event.kind === "ChildSpawned").length,
+      )}`;
   const subscriptionAbort = new AbortController();
-  const rearmed = waitForChildAndRearm(
+  const rearmed = waitForRearm(
     runtime.repoStore,
     runtime.parentRunId,
     childRunId,
@@ -431,7 +450,7 @@ async function triggerWorkflow(
     } else {
       if (runtime.parentRun === undefined) {
         // The restored RepoStore is already canonical, so a seedless recovery
-        // adopts it and re-arms the durable on-trigger input park.
+        // adopts its durable input park.
         runtime.parentRun = runtimeRun(workflow, createParentEnv(runtime), {
           runId: runtime.parentRunId,
         });
@@ -455,6 +474,22 @@ async function triggerWorkflow(
     ]);
   } finally {
     subscriptionAbort.abort();
+  }
+
+  if (childRunId === undefined) {
+    const output = runtime.turnOutputs.get(runtime.parentRunId);
+    const turns = runtime.childTurns.get(runtime.parentRunId);
+    if (output === undefined || turns === undefined) {
+      throw new Error("browser conversation produced no turn result");
+    }
+    const updatedRunLog = await runtime.repoStore.read(runtime.parentRunId);
+    return {
+      deploymentId: runtime.deploymentId,
+      output,
+      runEventKinds: updatedRunLog.map((event) => event.kind),
+      runId: runtime.parentRunId,
+      turns,
+    };
   }
 
   const childResultPromise = runtime.childResults.get(childRunId);
@@ -515,6 +550,7 @@ async function createRuntime(args: {
   const scheduler = createInMemoryScheduler({ repoStore, clock });
   const childResults = new Map<string, Promise<RunResult>>();
   const childTurns = new Map<string, ConversationTurn[]>();
+  const turnOutputs = new Map<string, unknown>();
   const authorize = createBrowserWorkflowAuthorize({
     anchorRunId: args.anchorRunId,
     getRunGrants: (runId) => runGrants.get(runId),
@@ -527,6 +563,7 @@ async function createRuntime(args: {
     parentRunId: args.anchorRunId,
     source: args.source,
     storage: args.storage,
+    turnOutputs,
   });
 
   const runtime: BrowserDeploymentRuntime = {
@@ -548,6 +585,7 @@ async function createRuntime(args: {
     spawnSuspendableChild: async () => {
       throw new Error("browser child spawner is not initialized");
     },
+    turnOutputs,
   };
   runtime.spawnSuspendableChild = createChildSpawner(runtime, clock);
   return runtime;
@@ -560,13 +598,17 @@ function createStepInvoker(args: {
   parentRunId: string;
   source: InferenceSource;
   storage: ReturnType<typeof createBrowserIsogitStorage>;
+  turnOutputs: Map<string, unknown>;
 }): StepInvoker {
   return async (request) => {
-    const childRunId = request.authzContext.runId;
-    if (childRunId === undefined) {
-      throw new Error("browser workflow step has no child run id");
+    const runId = request.authzContext.runId;
+    if (runId === undefined) {
+      throw new Error("browser workflow step has no run id");
     }
-    const workdir = `/deployments/${args.deploymentId}/runs/${args.parentRunId}/children/${childRunId}/${request.authzContext.stepId ?? "step"}`;
+    const stepId = request.authzContext.stepId ?? "step";
+    const workdir = CONVERSATION_ENABLED
+      ? `/deployments/${args.deploymentId}/runs/${runId}/${stepId}`
+      : `/deployments/${args.deploymentId}/runs/${args.parentRunId}/children/${runId}/${stepId}`;
     const agentStore = await args.storage.createIsogitStore(workdir);
     const runningAgent = await createAgent(request.agent, {
       sources: [args.source],
@@ -579,8 +621,13 @@ function createStepInvoker(args: {
         args.authorize(resource, action, request.authzContext),
     });
 
+    let output: unknown;
     try {
-      const result = await runningAgent.send(encodeInput(request.input), {
+      const input =
+        request.resume?.kind === "input"
+          ? request.resume.decision
+          : request.input;
+      const result = await runningAgent.send(encodeInput(input), {
         signal: request.signal,
       });
       if (result.type === "suspended") {
@@ -588,11 +635,15 @@ function createStepInvoker(args: {
           "browser workflow spike does not support approval suspension",
         );
       }
-      return { output: { reply: result.reply, turn: result.turn } };
+      output = { reply: result.reply, turn: result.turn };
+      return { output };
     } finally {
       await runningAgent.close();
       const state = await agentStore.load();
-      args.childTurns.set(childRunId, state.turns);
+      args.childTurns.set(runId, state.turns);
+      if (output !== undefined) {
+        args.turnOutputs.set(runId, output);
+      }
     }
   };
 }
@@ -690,18 +741,22 @@ function createChildEnv(
   };
 }
 
-async function waitForChildAndRearm(
+async function waitForRearm(
   repoStore: RepoStore,
   parentRunId: string,
-  childRunId: string,
+  childRunId: string | undefined,
   signal: AbortSignal,
 ): Promise<void> {
-  let childCompleted = false;
+  let childCompleted = childRunId === undefined;
   for await (const { event } of repoStore.subscribe(parentRunId, {
     from: "head",
     signal,
   })) {
-    if (event.kind === "ChildCompleted" && event.childRunId === childRunId) {
+    if (
+      childRunId !== undefined &&
+      event.kind === "ChildCompleted" &&
+      event.childRunId === childRunId
+    ) {
       childCompleted = true;
       continue;
     }
@@ -713,7 +768,7 @@ async function waitForChildAndRearm(
       return;
     }
   }
-  throw new Error(`browser deployment stopped before rearming ${childRunId}`);
+  throw new Error(`browser deployment stopped before rearming ${parentRunId}`);
 }
 
 function findInputSignal(

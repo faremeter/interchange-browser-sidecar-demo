@@ -8,7 +8,7 @@ import {
   type EnsureBrowserSidecarRequest,
 } from "./browser-provisioning";
 import { buildBrowserWorkflow } from "./browser-workflow/build";
-import { authoredWorkflow } from "./browser-workflow/workflow";
+import { createAuthoredWorkflow } from "./browser-workflow/workflow";
 import { createDemoHubClient, type InferenceSource } from "./hub";
 
 const TriggerRequest = type({ browserId: "string", prompt: "string" });
@@ -37,9 +37,16 @@ const HUB_HTTP_URL = Bun.env.BROWSER_HUB_HTTP_URL ?? "http://127.0.0.1:3000";
 const CONTROL_TOKEN =
   Bun.env.BROWSER_DEMO_CONTROL_TOKEN ?? "local-browser-sidecar-demo";
 const PUBLIC_DIRECTORY = path.join(import.meta.dir, "../public");
+const CONVERSATION_ENABLED = readBoolean(
+  "BROWSER_DEMO_CONVERSATION",
+  Bun.env.BROWSER_DEMO_CONVERSATION,
+);
 
-const workflowDefinition = WorkflowDefinition.assert(authoredWorkflow);
+const workflowDefinition = WorkflowDefinition.assert(
+  createAuthoredWorkflow(CONVERSATION_ENABLED),
+);
 const browserWorkflow = await buildBrowserWorkflow({
+  conversationEnabled: CONVERSATION_ENABLED,
   entrypoint: path.join(import.meta.dir, "browser-workflow/workflow.ts"),
 });
 const browserUI = await buildBrowserUI();
@@ -324,4 +331,10 @@ function readPort(value: string): number {
     throw new Error(`Invalid BROWSER_DEMO_PORT: ${value}`);
   }
   return port;
+}
+
+function readBoolean(name: string, value: string | undefined): boolean {
+  if (value === undefined || value === "" || value === "false") return false;
+  if (value === "true") return true;
+  throw new Error(`${name} must be true or false`);
 }

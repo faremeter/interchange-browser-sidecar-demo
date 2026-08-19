@@ -62,6 +62,12 @@ await interchangeDebug.run(
 );
 ```
 
+By default, every `run()` call starts a fresh child workflow, matching the
+original demo behavior. To keep one agent conversation across calls, start the
+server with `BROWSER_DEMO_CONVERSATION=true`. The workflow then uses one
+`triggers: "unbounded"` agent step; later `run()` calls resume it with its prior
+turns still in context.
+
 Disconnect the tab with `await interchangeDebug.disconnect()`.
 
 Use only a temporary, restricted Anthropic key. Direct browser inference means
