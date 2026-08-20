@@ -1,16 +1,3 @@
-diff --git a/bin/seed.ts b/bin/seed.ts
---- a/bin/seed.ts
-+++ b/bin/seed.ts
-@@ -884,3 +884,3 @@
-   "GET",
--  `/api/tenants/${acmeTenantId}/catalog/models`,
-+  `/api/tenants/${acmeTenantId}/catalog/models?limit=100`,
-   undefined,
-@@ -1015,3 +1015,3 @@
-     "GET",
--    `/api/tenants/${acmeTenantId}/catalog/offerings`,
-+    `/api/tenants/${acmeTenantId}/catalog/offerings?limit=100`,
-     undefined,
 diff --git a/packages/inference/src/providers/anthropic.test.ts b/packages/inference/src/providers/anthropic.test.ts
 --- a/packages/inference/src/providers/anthropic.test.ts
 +++ b/packages/inference/src/providers/anthropic.test.ts

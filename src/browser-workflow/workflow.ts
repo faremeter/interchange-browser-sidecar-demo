@@ -24,6 +24,7 @@ import {
   createInMemoryScheduler,
   createInMemorySignalChannel,
   createNoopDrainController,
+  computeLiveDefinitionHash,
   defineWorkflow,
   onTrigger,
   runtimeRun,
@@ -101,32 +102,15 @@ const agent = defineAgent({
   inference: AGENT_INFERENCE,
 });
 
-// The Hub needs the declarative shape for deployment and source resolution,
-// but the executable inspect_page factory lives only in the downloaded
-// bundle. Keeping it out of workflow.json is the point of prebundling code.
-const hubAgent = defineAgent({
-  id: agent.id,
-  systemPrompt: AGENT_SYSTEM_PROMPT,
-  tools: [],
-  capabilities: [],
-  inference: AGENT_INFERENCE,
-});
-
 const bodyWorkflow = defineWorkflow({
   id: "browser-debug-workflow__debug_page",
   trigger: { type: "manual" },
   steps: { [BODY_STEP_ID]: step({ agent }) },
 });
 
-const hubBodyWorkflow = defineWorkflow({
-  id: bodyWorkflow.id,
-  trigger: { type: "manual" },
-  steps: { [BODY_STEP_ID]: step({ agent: hubAgent }) },
-});
-
 const authoredSection = onTrigger({
   on: { type: "manual" },
-  body: hubBodyWorkflow,
+  body: bodyWorkflow,
 });
 const deployedSection: OnTriggerPrimitive = {
   ...authoredSection,
@@ -138,9 +122,8 @@ export function createAuthoredWorkflow(conversationEnabled: boolean) {
   return defineWorkflow({
     id: "browser-debug-workflow",
     ...(conversationEnabled ? { trigger: MANUAL_TRIGGER } : {}),
-    sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
     steps: conversationEnabled
-      ? { [BODY_STEP_ID]: step({ agent: hubAgent, triggers: "unbounded" }) }
+      ? { [BODY_STEP_ID]: step({ agent, triggers: "unbounded" }) }
       : { [SECTION_ID]: authoredSection },
   });
 }
@@ -151,11 +134,11 @@ export const authoredWorkflow = createAuthoredWorkflow(CONVERSATION_ENABLED);
 export const workflow = defineWorkflow({
   id: authoredWorkflow.id,
   ...(CONVERSATION_ENABLED ? { trigger: MANUAL_TRIGGER } : {}),
-  sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
   steps: CONVERSATION_ENABLED
     ? { [BODY_STEP_ID]: step({ agent, triggers: "unbounded" }) }
     : { [SECTION_ID]: deployedSection },
 });
+const authoredWorkflowHash = computeLiveDefinitionHash(authoredWorkflow);
 
 export const manifest = Object.freeze({
   workflowId: workflow.id,
@@ -296,9 +279,13 @@ async function deploy(
   if (frame.workflow === undefined) {
     throw new Error("browser bundle requires a workflow deployment frame");
   }
-  if (frame.workflow.definition.id !== workflow.id) {
+  if (frame.workflow.approvedWireHash === undefined) {
+    throw new Error("browser deployment has no approved workflow hash");
+  }
+  const bundledHash = await authoredWorkflowHash;
+  if (frame.workflow.approvedWireHash !== bundledHash) {
     throw new Error(
-      `browser bundle contains ${workflow.id}, but the hub deployed ${frame.workflow.definition.id}`,
+      `browser workflow hash ${bundledHash} does not match approved hash ${frame.workflow.approvedWireHash}`,
     );
   }
   const deployedRunId = deriveWorkflowRunId(frame.agentAddress);

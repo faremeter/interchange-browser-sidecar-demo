@@ -1,6 +1,7 @@
 export type BrowserWorkflowBuildOptions = {
   conversationEnabled?: boolean;
   entrypoint: string;
+  target?: "browser" | "bun";
 };
 
 export type BrowserWorkflowBundle = {
@@ -14,7 +15,7 @@ export async function buildBrowserWorkflow(
 ): Promise<BrowserWorkflowBundle> {
   const build = await Bun.build({
     entrypoints: [options.entrypoint],
-    target: "browser",
+    target: options.target ?? "browser",
     format: "esm",
     conditions: ["intx-src"],
     define: {

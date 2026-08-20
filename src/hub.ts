@@ -21,10 +21,17 @@ const GitTokenResponse = type({ secret: "string" });
 const MailResponse = type({ messageId: "string" });
 const PrincipalResponse = type({ tenantId: "string", tenantSlug: "string" });
 const PrincipalListResponse = type({ data: PrincipalResponse.array() });
+const TenantResponse = type({
+  id: "string",
+  "config?": "Record<string, unknown>",
+});
 
 const ASSET_NAME = "browser-debug-workflow";
+const DEFAULT_TENANT_SLUG = "browser-demo";
 const INFERENCE_PROVIDER_NAME = "Browser Demo Anthropic";
 const INFERENCE_CREDENTIAL_NAME = "Browser Demo Anthropic Key";
+const WORKFLOW_ENTRY = "./workflow.mjs";
+const WORKFLOW_PACKAGE_NAME = "@intx-demo/browser-debug-workflow";
 
 export type InferenceSource = {
   apiKey: string;
@@ -41,7 +48,7 @@ export type DemoHubClientOptions = {
   password?: string;
   tenantId?: string;
   tenantSlug?: string;
-  workflowDefinition: Record<string, unknown>;
+  workflowSource: string;
 };
 
 export function createDemoHubClient(options: DemoHubClientOptions) {
@@ -78,14 +85,23 @@ export function createDemoHubClient(options: DemoHubClientOptions) {
     const principals = PrincipalListResponse.assert(
       await api(cookie, "GET", "/api/me/principals"),
     );
-    const tenantSlug = options.tenantSlug ?? "acme";
+    const tenantSlug = options.tenantSlug ?? DEFAULT_TENANT_SLUG;
     const principal = principals.data.find(
       (candidate) => candidate.tenantSlug === tenantSlug,
     );
     if (principal === undefined) {
-      throw new Error(
-        `Tenant ${tenantSlug} is not visible to the signed-in user`,
-      );
+      if (options.tenantSlug !== undefined) {
+        throw new Error(
+          `Tenant ${tenantSlug} is not visible to the signed-in user`,
+        );
+      }
+      tenantId = TenantResponse.assert(
+        await api(cookie, "POST", "/api/tenants", {
+          name: "Browser Sidecar Demo",
+          slug: tenantSlug,
+        }),
+      ).id;
+      return tenantId;
     }
     tenantId = principal.tenantId;
     return tenantId;
@@ -94,23 +110,20 @@ export function createDemoHubClient(options: DemoHubClientOptions) {
   async function bootstrap(source: InferenceSource) {
     const cookie = await authenticate();
     const resolvedTenantId = await resolveTenantId(cookie);
+    await ensureExclusivePlacement(cookie, resolvedTenantId);
     const catalogSource = await ensureCatalogSource(
       (method, pathname, body) => rawAPI(cookie, method, pathname, body),
       resolvedTenantId,
       source,
     );
     const asset = await ensureWorkflowAsset(cookie, resolvedTenantId);
-    await pushWorkflow(cookie, resolvedTenantId, asset.name);
+    const commitSha = await pushWorkflow(cookie, resolvedTenantId, asset.name);
     const deployment = DeploymentResponse.assert(
       await api(
         cookie,
         "POST",
         `/api/tenants/${resolvedTenantId}/workflows/deployments`,
-        {
-          assetId: asset.id,
-          sources: [catalogSource],
-          defaultSource: catalogSource.id,
-        },
+        createWorkflowDeploymentRequest(asset.id, commitSha, catalogSource),
       ),
     );
     return { deploymentId: deployment.id, tenantId: resolvedTenantId };
@@ -127,6 +140,18 @@ export function createDemoHubClient(options: DemoHubClientOptions) {
         { content: prompt },
       ),
     );
+  }
+
+  async function ensureExclusivePlacement(
+    cookie: string,
+    resolvedTenantId: string,
+  ): Promise<void> {
+    const tenant = TenantResponse.assert(
+      await api(cookie, "GET", `/api/tenants/${resolvedTenantId}`),
+    );
+    await api(cookie, "PATCH", `/api/tenants/${resolvedTenantId}`, {
+      config: withBrowserPlacement(tenant.config ?? {}),
+    });
   }
 
   async function ensureWorkflowAsset(cookie: string, resolvedTenantId: string) {
@@ -162,7 +187,7 @@ export function createDemoHubClient(options: DemoHubClientOptions) {
     cookie: string,
     resolvedTenantId: string,
     assetName: string,
-  ): Promise<void> {
+  ): Promise<string> {
     const token = GitTokenResponse.assert(
       await api(cookie, "POST", `/api/tenants/${resolvedTenantId}/git-tokens`, {
         name: `browser-sidecar-demo-${crypto.randomUUID()}`,
@@ -198,12 +223,29 @@ export function createDemoHubClient(options: DemoHubClientOptions) {
         root,
         env,
       );
-      await writeFile(
-        join(repoDirectory, "workflow.json"),
-        `${JSON.stringify(options.workflowDefinition, null, 2)}\n`,
-        "utf8",
-      );
-      await runGit(["add", "workflow.json"], repoDirectory, env);
+      await rm(join(repoDirectory, "workflow.json"), { force: true });
+      await Promise.all([
+        writeFile(
+          join(repoDirectory, "package.json"),
+          `${JSON.stringify(
+            {
+              name: WORKFLOW_PACKAGE_NAME,
+              version: "0.1.0",
+              type: "module",
+              interchange: { workflow: WORKFLOW_ENTRY },
+            },
+            null,
+            2,
+          )}\n`,
+          "utf8",
+        ),
+        writeFile(
+          join(repoDirectory, WORKFLOW_ENTRY),
+          options.workflowSource,
+          "utf8",
+        ),
+      ]);
+      await runGit(["add", "--all"], repoDirectory, env);
       const diff = await runGit(
         ["diff", "--cached", "--quiet"],
         repoDirectory,
@@ -222,6 +264,9 @@ export function createDemoHubClient(options: DemoHubClientOptions) {
           env,
         );
       }
+      return (
+        await runGit(["rev-parse", "HEAD"], repoDirectory, env)
+      ).stdout.trim();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -273,6 +318,35 @@ type HubRequest = (
   pathname: string,
   body?: unknown,
 ) => Promise<APIResult>;
+
+export function withBrowserPlacement<T extends Record<string, unknown>>(
+  config: T,
+) {
+  return {
+    ...config,
+    sidecarPlacement: {
+      sharing: "exclusive" as const,
+      reuse: "same-deployment" as const,
+    },
+  };
+}
+
+export function createWorkflowDeploymentRequest(
+  assetId: string,
+  commitSha: string,
+  source: InferenceSource,
+) {
+  return {
+    source: {
+      kind: "asset" as const,
+      assetId,
+      package: { format: "source" as const, commitSha },
+    },
+    entry: WORKFLOW_ENTRY,
+    sources: [source],
+    defaultSource: source.id,
+  };
+}
 
 export async function ensureCatalogSource(
   request: HubRequest,
@@ -414,7 +488,7 @@ async function runGit(
   cwd: string,
   env: Record<string, string | undefined>,
   allowFailure = false,
-): Promise<{ exitCode: number }> {
+): Promise<{ exitCode: number; stdout: string }> {
   const process = Bun.spawn(["git", ...args], {
     cwd,
     env,
@@ -430,7 +504,7 @@ async function runGit(
   if (!allowFailure && exitCode !== 0) {
     throw new Error(`git ${args[0] ?? "command"} failed: ${stderr || stdout}`);
   }
-  return { exitCode };
+  return { exitCode, stdout };
 }
 
 function shellSingleQuote(value: string): string {

@@ -25,13 +25,13 @@ cd packages/provisioner
 bun link
 ```
 
-Prepare a clean Interchange Hub without the production sidecar:
+Prepare a clean Interchange checkout:
 
 ```bash
 cd ../interchange
 git apply ../interchange-browser-sidecar-demo/integration/interchange-hub.patch
 git apply ../interchange-browser-sidecar-demo/integration/interchange-browser-provisioner.patch
-bun install
+bun install --frozen-lockfile
 bin/db-reset --clean
 ```
 
@@ -44,13 +44,19 @@ ANTHROPIC_API_KEY=... \
 bun start
 ```
 
-Then start the Hub without the production sidecar:
+Then start the Hub with its local shared sidecar. The shared sidecar probes and
+freezes the workflow definition; tenant placement sends the approved deployment
+to the exclusively allocated browser sidecar:
 
 ```bash
 cd ../interchange
 BROWSER_DEMO_CONTROL_TOKEN=browser-demo-local \
-bin/dev --seed --no-sidecar
+bin/dev --seed
 ```
+
+Unless `BROWSER_TENANT_ID` or `BROWSER_TENANT_SLUG` is set, the demo creates a
+dedicated `browser-demo` tenant and configures its workflows for exclusive,
+same-deployment sidecar placement.
 
 Open <http://127.0.0.1:4174>, copy the generated one-time installation command,
 and paste it into the developer console of a non-sensitive page you want to
@@ -86,7 +92,8 @@ model request.
 - Each installed tab receives its own workflow deployment and keeps its own
   long-lived parent run; repeated `run()` calls create children within it.
 - The attached tab registers directly on the Hub's ordinary sidecar WebSocket.
-- The workflow requests exclusive, same-deployment sidecar placement.
+- The dedicated demo tenant requests exclusive, same-deployment sidecar
+  placement.
 - Hub calls the linked `SidecarProvisioner` exported by this repository; it
   assigns Hub-generated, allocation-scoped credentials to the waiting browser
   tab.

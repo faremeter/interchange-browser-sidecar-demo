@@ -10,6 +10,22 @@ index 9555bac7..9c4afe51 100644
      "@intx/crypto": "workspace:*",
      "@intx/db": "workspace:*",
      "@intx/hub-api": "workspace:*",
+diff --git a/bun.lock b/bun.lock
+index 2577fdd7..53aefcbf 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -60,6 +60,7 @@
+       "name": "@intx/hub-app",
+       "version": "0.2.2",
+       "dependencies": {
++        "@intx/browser-sidecar-demo-provisioner": "link:@intx/browser-sidecar-demo-provisioner",
+         "@intx/crypto": "workspace:*",
+         "@intx/db": "workspace:*",
+         "@intx/hub-api": "workspace:*",
+@@ -878,1 +879,3 @@
++    "@intx/browser-sidecar-demo-provisioner": ["@intx/browser-sidecar-demo-provisioner@link:@intx/browser-sidecar-demo-provisioner", {}],
++
+     "@intx/crypto": ["@intx/crypto@workspace:packages/crypto"],
 diff --git a/apps/hub/src/index.ts b/apps/hub/src/index.ts
 index a826a1de..81610429 100644
 --- a/apps/hub/src/index.ts

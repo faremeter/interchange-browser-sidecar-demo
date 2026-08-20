@@ -8,7 +8,6 @@ import {
   type EnsureBrowserSidecarRequest,
 } from "./browser-provisioning";
 import { buildBrowserWorkflow } from "./browser-workflow/build";
-import { createAuthoredWorkflow } from "./browser-workflow/workflow";
 import { createDemoHubClient, type InferenceSource } from "./hub";
 
 const TriggerRequest = type({ browserId: "string", prompt: "string" });
@@ -29,8 +28,6 @@ const DestroyBrowserSidecarRequest = type({
   sidecarId: "string",
   "externalRef?": "string",
 });
-const WorkflowDefinition = type("Record<string, unknown>");
-
 const HOST = Bun.env.BROWSER_DEMO_HOST ?? "127.0.0.1";
 const PORT = readPort(Bun.env.BROWSER_DEMO_PORT ?? "4174");
 const HUB_HTTP_URL = Bun.env.BROWSER_HUB_HTTP_URL ?? "http://127.0.0.1:3000";
@@ -42,12 +39,14 @@ const CONVERSATION_ENABLED = readBoolean(
   Bun.env.BROWSER_DEMO_CONVERSATION,
 );
 
-const workflowDefinition = WorkflowDefinition.assert(
-  createAuthoredWorkflow(CONVERSATION_ENABLED),
-);
 const browserWorkflow = await buildBrowserWorkflow({
   conversationEnabled: CONVERSATION_ENABLED,
   entrypoint: path.join(import.meta.dir, "browser-workflow/workflow.ts"),
+});
+const probeWorkflow = await buildBrowserWorkflow({
+  conversationEnabled: CONVERSATION_ENABLED,
+  entrypoint: path.join(import.meta.dir, "browser-workflow/probe.ts"),
+  target: "bun",
 });
 const browserUI = await buildBrowserUI();
 const debugSidecar = await buildBrowserWorkflow({
@@ -56,7 +55,7 @@ const debugSidecar = await buildBrowserWorkflow({
 const provisioning = createBrowserProvisioningBroker();
 const hub = createDemoHubClient({
   hubURL: HUB_HTTP_URL,
-  workflowDefinition,
+  workflowSource: probeWorkflow.source,
   ...(Bun.env.BROWSER_HUB_EMAIL !== undefined && {
     email: Bun.env.BROWSER_HUB_EMAIL,
   }),

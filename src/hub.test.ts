@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 
-import { ensureCatalogSource, type InferenceSource } from "./hub";
+import {
+  createWorkflowDeploymentRequest,
+  ensureCatalogSource,
+  withBrowserPlacement,
+  type InferenceSource,
+} from "./hub";
 
 const source: InferenceSource = {
   id: "browser-demo-anthropic",
@@ -94,6 +99,29 @@ test("reuses catalog records and rotates the demo credential", async () => {
 
   expect(catalogSource.id).toBe("offering");
   expect(requests.remaining()).toBe(0);
+});
+
+test("builds a pinned source-tree deployment request", () => {
+  expect(createWorkflowDeploymentRequest("asset", "commit", source)).toEqual({
+    source: {
+      kind: "asset",
+      assetId: "asset",
+      package: { format: "source", commitSha: "commit" },
+    },
+    entry: "./workflow.mjs",
+    sources: [source],
+    defaultSource: source.id,
+  });
+});
+
+test("adds browser placement without dropping tenant configuration", () => {
+  expect(withBrowserPlacement({ existing: true })).toEqual({
+    existing: true,
+    sidecarPlacement: {
+      sharing: "exclusive",
+      reuse: "same-deployment",
+    },
+  });
 });
 
 type ScriptedResponse = {
